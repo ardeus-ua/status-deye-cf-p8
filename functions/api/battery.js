@@ -30,10 +30,18 @@ function getBaseUrl() {
     return 'https://eu1-developer.deyecloud.com';
 }
 
+async function sha256(message) {
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
- * Отримання access token з DeyeCloud (PLAIN PASSWORD VERSION)
+ * Отримання access token з DeyeCloud
  */
 async function getAccessToken(env) {
+    // 1. KV Cache
     if (env.DEYE_CACHE) {
         try {
             const cachedToken = await env.DEYE_CACHE.get('access_token', { type: 'json' });
@@ -46,16 +54,26 @@ async function getAccessToken(env) {
     }
 
     const baseUrl = getBaseUrl();
+    const passwordHash = await sha256(env.DEYE_PASSWORD);
 
-    // WARNING: Sending plain password! Usually secure over HTTPS.
-    // Deye sometimes requires this if hash fails.
-    const passwordPlain = env.DEYE_PASSWORD;
+    // Спроба використати USERNAME ('ardeus') замість email if available
+    // Витягуємо username з email (якщо це gmail), або використовуємо як є
+    let loginAccount = env.DEYE_EMAIL;
+    if (loginAccount.includes('@')) {
+        // Для тесту спробуємо 'ardeus' якщо email 'ardeus@gmail.com'
+        // Але краще передати обидва поля або спробувати одне
+        const parts = loginAccount.split('@');
+        if (parts[0] === 'ardeus') loginAccount = 'ardeus';
+    }
 
+    // Payload for DeyeCloud /token
+    // Deye API documentation mentions 'email', but sometimes 'account' or 'username' works better
     const authData = {
         appId: env.DEYE_APP_ID,
         appSecret: env.DEYE_APP_SECRET,
-        email: env.DEYE_EMAIL,
-        password: passwordPlain // Plain text!
+        // Спробуємо передати і email і username, або замінити email на username
+        email: loginAccount,
+        password: passwordHash
     };
 
     const response = await fetch(`${baseUrl}/v1.0/token`, {
@@ -71,13 +89,15 @@ async function getAccessToken(env) {
 
     const result = await response.json();
 
-    if (!result.data || !result.data.accessToken) {
+    // Check for token in different places
+    const token = result.data?.accessToken || result.data?.token || result.access_token;
+
+    if (!token) {
         const safeAuth = { ...authData, password: '***', appSecret: '***' };
         throw new Error(`Invalid token response from ${baseUrl}: ${JSON.stringify(result)}. Payload: ${JSON.stringify(safeAuth)}`);
     }
 
-    const token = result.data.accessToken;
-
+    // 3. Save to KV
     if (env.DEYE_CACHE) {
         try {
             await env.DEYE_CACHE.put('access_token', JSON.stringify({ token }), {
@@ -91,7 +111,19 @@ async function getAccessToken(env) {
     return token;
 }
 
-// ... (Rest of logic similar to previous working stub)
+// Функція отримання даних (відновлена логіка)
+async function fetchInverterData(token, sn) {
+    const baseUrl = getBaseUrl();
+    // Використовуємо device/detail для отримання даних
+    const response = await fetch(`${baseUrl}/v1.0/device/detail?sn=${sn}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!response.ok) return null;
+    const json = await response.json();
+    return json;
+}
 
 export async function onRequest(context) {
     const { env, request } = context;
@@ -110,11 +142,26 @@ export async function onRequest(context) {
 
         const token = await getAccessToken(env);
 
-        return new Response(JSON.stringify({
-            message: "Auth Successful! (Plain Password worked)",
-            auth: "OK",
-            region: "EU"
-        }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        // Авторизація пройшла! Пробуємо отримати дані.
+        const batteries = [];
+
+        // Запитуємо дані для кожного інвертора
+        for (const [id, sn] of Object.entries(INVERTERS)) {
+            // Для тесту запитаємо тільки перший, щоб не чекати довго
+            // Або запустимо всі паралельно
+            const data = await fetchInverterData(token, sn);
+
+            // Тут треба парсити SOC. 
+            // Поки що повернемо сирі дані першого, щоб подивитись структуру.
+            if (id === '1') {
+                return new Response(JSON.stringify({
+                    firstDeviceRaw: data,
+                    tokenObtained: true
+                }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
+        }
+
+        return new Response(JSON.stringify({ message: "No inverters found" }), { headers: corsHeaders });
 
     } catch (error) {
         return new Response(JSON.stringify({ error: error.message }), {
