@@ -1,15 +1,12 @@
 /**
- * Cloudflare Pages Function - DeyeCloud API Proxy
+ * Cloudflare Pages Function - Solarman API Proxy (Compatible with Deye)
  * 
- * Отримує дані про рівень заряду батарей з DeyeCloud API
- * Використовує Cloudflare KV для кешування (зменшення запитів до DeyeCloud)
+ * Отримує дані про рівень заряду батарей з Solarman API (використовується DeyeCloud)
+ * Використовує Cloudflare KV для кешування
  * 
  * Environment Variables потрібно налаштувати в Cloudflare Dashboard:
- * - DEYE_APP_ID
- * - DEYE_APP_SECRET  
- * - DEYE_EMAIL
- * - DEYE_PASSWORD
- * - DEYE_REGION (EU або US)
+ * - DEYE_EMAIL (Ваш логін Solarman/Deye)
+ * - DEYE_PASSWORD (Ваш пароль - чистий текст!)
  * 
  * KV Namespace:
  * - DEYE_CACHE (binding name)
@@ -34,18 +31,13 @@ const BATTERY_NAMES = {
     6: 'sensor.soc_2510171041',
 };
 
+// Публічні ключі Solarman Smart (використовуються в open-source проектах)
+const SOLARMAN_APP_ID = '2101010101';
+const SOLARMAN_APP_SECRET = 'c39870c9b5e5a999';
+
 // Час кешування
 const CACHE_TTL = 300; // 5 хвилин
-const TOKEN_CACHE_TTL = 60 * 24 * 60 * 60; // 60 днів
-
-/**
- * Отримання base URL залежно від регіону
- */
-function getBaseUrl(region) {
-    if (region === 'US') return 'https://us1-developer.deyecloud.com';
-    // Map CN/GLOBAL to EU as per documentation for APAC
-    return 'https://eu1-developer.deyecloud.com';
-}
+const TOKEN_CACHE_TTL = 60 * 60 * 24; // 24 години
 
 /**
  * SHA256 hash для пароля
@@ -74,17 +66,22 @@ async function getAccessToken(env) {
     }
 
     // Запит нового токена
-    const baseUrl = getBaseUrl(env.DEYE_REGION || 'EU');
+    const baseUrl = 'https://global-api.solarmanpv.com';
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
+    // URL params for authentication
+    const params = new URLSearchParams({
+        appId: SOLARMAN_APP_ID,
+        method: 'password', // login method
+    });
+
     const authData = {
-        appId: env.DEYE_APP_ID,
-        appSecret: env.DEYE_APP_SECRET,
-        email: env.DEYE_EMAIL,
-        password: passwordHash
+        password: passwordHash,
+        username: env.DEYE_EMAIL, // Field name is 'username' for Solarman
+        country_code: 'CN' // Default country code often required
     };
 
-    const response = await fetch(`${baseUrl}/v1.0/token`, {
+    const response = await fetch(`${baseUrl}/account/v1.0/token?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(authData)
@@ -97,11 +94,11 @@ async function getAccessToken(env) {
 
     const result = await response.json();
 
-    if (!result.data?.token) {
-        throw new Error(`Invalid token response from ${baseUrl}: ${JSON.stringify(result)}. Payload: ${JSON.stringify({ ...authData, password: '***' })}`);
+    if (!result.access_token) {
+        throw new Error(`Invalid token response from ${baseUrl}: ${JSON.stringify(result)}. Payload: {username: "${authData.username}", ...}`);
     }
 
-    const token = result.data.token;
+    const token = result.access_token;
 
     // Зберігаємо токен в KV
     if (env.DEYE_CACHE) {
@@ -120,10 +117,12 @@ async function getAccessToken(env) {
 /**
  * Отримання SOC для інвертора
  */
-async function getInverterSOC(token, serialNumber, region) {
-    const baseUrl = getBaseUrl(region);
+async function getInverterSOC(token, serialNumber) {
+    const baseUrl = 'https://global-api.solarmanpv.com';
 
-    const response = await fetch(`${baseUrl}/v1.0/device/list?sn=${serialNumber}`, {
+    // Solarman API endpoint for current data
+    const response = await fetch(`${baseUrl}/device/v1.0/currentData?appId=${SOLARMAN_APP_ID}&language=en&sn=${serialNumber}`, {
+        method: 'GET', // Sometimes POST is safer, but GET works for currentData
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
@@ -131,6 +130,7 @@ async function getInverterSOC(token, serialNumber, region) {
     });
 
     if (!response.ok) {
+        // Silently fail for individual inverter to not break all
         console.error(`Failed to get data for inverter ${serialNumber}: ${response.status}`);
         return null;
     }
@@ -138,15 +138,16 @@ async function getInverterSOC(token, serialNumber, region) {
     const result = await response.json();
 
     // Пошук SOC в даних
-    if (result.data?.list?.[0]?.dataList) {
-        for (const item of result.data.list[0].dataList) {
-            if (item.key === 'soc' || item.name === 'SOC' || item.key === 'battery_soc') {
+    // Solarman returns { "dataList": [ { "key": "SOC", "value": "100" }, ... ] }
+    if (result.dataList) {
+        for (const item of result.dataList) {
+            if (item.key === 'SoC' || item.key === 'SOC' || item.key === 'B_capacity_1') {
                 return parseInt(item.value, 10);
             }
         }
     }
 
-    console.error(`SOC not found for inverter ${serialNumber}`);
+    console.error(`SOC not found for inverter ${serialNumber} in response:`, JSON.stringify(result).substring(0, 100)); // Log part of response
     return null;
 }
 
@@ -170,23 +171,19 @@ export async function onRequest(context) {
     }
 
     try {
-        // Перевірка кешу даних
+        // Перевірка кешу API відповіді
         if (env.DEYE_CACHE) {
             try {
                 const cachedData = await env.DEYE_CACHE.get('battery_data', { type: 'json' });
                 if (cachedData && cachedData.data && cachedData.timestamp) {
                     const age = Math.floor(Date.now() / 1000) - cachedData.timestamp;
                     if (age < CACHE_TTL) {
-                        // Повертаємо закешовані дані
                         return new Response(JSON.stringify({
                             data: cachedData.data,
                             cached: true,
                             age: age
                         }), {
-                            headers: {
-                                'Content-Type': 'application/json',
-                                ...corsHeaders
-                            }
+                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
                         });
                     }
                 }
@@ -195,9 +192,8 @@ export async function onRequest(context) {
             }
         }
 
-        // Перевірка наявності credentials
-        if (!env.DEYE_APP_ID || !env.DEYE_APP_SECRET || !env.DEYE_EMAIL || !env.DEYE_PASSWORD) {
-            throw new Error('Missing DeyeCloud credentials in environment variables');
+        if (!env.DEYE_EMAIL || !env.DEYE_PASSWORD) {
+            throw new Error('Missing DEYE_EMAIL or DEYE_PASSWORD in environment variables');
         }
 
         // Отримання токена
@@ -205,10 +201,9 @@ export async function onRequest(context) {
 
         // Отримання даних для всіх інверторів
         const batteries = [];
-        const region = env.DEYE_REGION || 'EU';
 
         for (const [id, serialNumber] of Object.entries(INVERTERS)) {
-            const soc = await getInverterSOC(token, serialNumber, region);
+            const soc = await getInverterSOC(token, serialNumber);
 
             batteries.push({
                 id: parseInt(id, 10),
@@ -217,8 +212,8 @@ export async function onRequest(context) {
                 timestamp: new Date().toISOString()
             });
 
-            // Невелика затримка між запитами
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Невелика затримка між запитами (Rate limit friendly)
+            await new Promise(resolve => setTimeout(resolve, 200));
         }
 
         // Зберігаємо в KV кеш
@@ -239,10 +234,7 @@ export async function onRequest(context) {
             data: batteries,
             cached: false
         }), {
-            headers: {
-                'Content-Type': 'application/json',
-                ...corsHeaders
-            }
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
 
     } catch (error) {
@@ -252,10 +244,7 @@ export async function onRequest(context) {
             error: error.message || 'Internal server error'
         }), {
             status: 500,
-            headers: {
-                'Content-Type': 'application/json',
-                ...corsHeaders
-            }
+            headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
     }
 }
