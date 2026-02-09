@@ -43,7 +43,7 @@ const TOKEN_CACHE_TTL = 60 * 24 * 60 * 60; // 60 днів
  */
 function getBaseUrl(region) {
     if (region === 'US') return 'https://us1-developer.deyecloud.com';
-    if (region === 'CN' || region === 'GLOBAL') return 'https://api.deyecloud.com';
+    if (region === 'CN' || region === 'GLOBAL') return 'https://api.deye.com.cn';
     return 'https://eu1-developer.deyecloud.com'; // Default to EU
 }
 
