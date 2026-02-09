@@ -97,7 +97,7 @@ async function getAccessToken(env) {
     const result = await response.json();
 
     if (!result.data?.token) {
-        throw new Error('Invalid token response');
+        throw new Error(`Invalid token response: ${JSON.stringify(result)}`);
     }
 
     const token = result.data.token;
