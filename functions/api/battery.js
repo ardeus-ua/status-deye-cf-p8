@@ -78,6 +78,8 @@ async function getAccessToken(env) {
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
     const authData = {
+        appId: env.DEYE_APP_ID,
+        appSecret: env.DEYE_APP_SECRET,
         account: env.DEYE_EMAIL,
         password: passwordHash
     };
