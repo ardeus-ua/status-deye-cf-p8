@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="uk">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Індикатори Енергосистеми</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <meta name="theme-color" content="#007bff">
+    <style>
+        /* Світла тема (за замовчуванням) */
+        :root {
+            --primary-color: #007bff;
+            --success-color: #5cb85c;
+            --warning-color: #f0ad4e;
+            --danger-color: #d9534f;
+            --bg-color: #f8f9fa;
+            --card-bg: #ffffff;
+            --text-color: #333;
+            --border-color: #e0e0e0;
+            --battery-bg: #f0f0f0;
+            --battery-border: #333;
+            --footer-border: #ddd;
+        }
+
+        /* Темна тема */
+        body.dark-theme {
+            --primary-color: #4a9eff;
+            --success-color: #6fdc6f;
+            --warning-color: #ffb84d;
+            --danger-color: #ff6b6b;
+            --bg-color: #1a1a1a;
+            --card-bg: #2d2d2d;
+            --text-color: #e0e0e0;
+            --border-color: #444;
+            --battery-bg: #1a1a1a;
+            --battery-border: #888;
+            --footer-border: #444;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            margin: 0;
+            padding: 15px 10px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        h1 {
+            margin-bottom: 8px;
+            font-size: 1.6em;
+            text-align: center;
+        }
+
+        .subtitle {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+            text-align: center;
+            color: var(--primary-color);
+            font-weight: 500;
+            opacity: 0.9;
+        }
+
+        .battery-grid {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .indicator-unit {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 15px;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            background: var(--card-bg);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            transition: transform 0.2s, background-color 0.3s, border-color 0.3s;
+            width: calc(20% - 20px);
+            min-width: 180px;
+            box-sizing: border-box;
+        }
+
+        /* Інтерактивність для ліфтів */
+        .indicator-unit.elevator {
+            cursor: pointer;
+            transition: transform 0.2s, opacity 0.3s, width 0.3s ease, margin 0.3s ease, padding 0.3s ease, border-width 0.3s ease;
+        }
+
+        .indicator-unit.elevator:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+        }
+
+        .indicator-unit.elevator:active {
+            transform: translateY(-1px);
+        }
+
+        .indicator-unit.hidden {
+            display: none;
+        }
+
+        .system-title {
+            font-size: 1.2em;
+            margin-top: 0;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .battery-container {
+            width: 100px;
+            height: 60px;
+            border: 3px solid var(--battery-border);
+            border-radius: 8px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 8px;
+            background-color: var(--battery-bg);
+            transition: border-color 0.3s;
+        }
+
+        /* Візуальне заповнення батареї (горизонтально) */
+        .battery-fill {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--success-color) 0%, var(--success-color) 100%);
+            transition: width 0.5s ease, background 0.3s ease;
+            border-radius: 4px 0 0 4px;
+            overflow: hidden;
+        }
+
+        .battery-container::after {
+            content: '';
+            position: absolute;
+            right: -8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 6px;
+            height: 15px;
+            background-color: var(--battery-border);
+            border-radius: 0 3px 3px 0;
+            transition: background-color 0.3s;
+        }
+
+        .battery-level {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #ffffff;
+            transition: none;
+            position: relative;
+            z-index: 10;
+            text-shadow:
+                0 0 4px rgba(0, 0, 0, 0.8),
+                0 0 8px rgba(0, 0, 0, 0.6),
+                1px 1px 2px rgba(0, 0, 0, 0.9),
+                -1px -1px 2px rgba(0, 0, 0, 0.9);
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+        }
+
+        .timestamp-text {
+            margin-top: 10px;
+            font-size: 0.8em;
+            color: #777;
+            text-align: center;
+        }
+
+        .color-success {
+            color: var(--success-color) !important;
+        }
+
+        .color-warning {
+            color: var(--warning-color) !important;
+        }
+
+        .color-danger {
+            color: var(--danger-color) !important;
+        }
+
+        .footer {
+            margin-top: 20px;
+            padding-top: 10px;
+            border-top: 1px solid var(--footer-border);
+            width: 100%;
+            max-width: 1200px;
+            text-align: center;
+        }
+
+        .footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9em;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Status indicator */
+        .status-indicator {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 0.75em;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            z-index: 1000;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success-color);
+        }
+
+        .status-dot.offline {
+            background: var(--danger-color);
+        }
+
+        .status-dot.cached {
+            background: var(--warning-color);
+        }
+
+        @media (max-width: 1024px) {
+            .indicator-unit {
+                width: calc(33.33% - 20px);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .indicator-unit {
+                width: calc(50% - 15px);
+            }
+        }
+
+        @media (max-width: 500px) {
+            .indicator-unit {
+                width: 100%;
+                max-width: 300px;
+            }
+        }
+
+        /* Перемикач теми */
+        .theme-toggle {
+            position: fixed;
+            top: 110px;
+            right: 20px;
+            z-index: 1000;
+        }
+
+        .theme-toggle input {
+            display: none;
+        }
+
+        .theme-toggle label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            width: 60px;
+            height: 30px;
+            background-color: var(--border-color);
+            border-radius: 30px;
+            position: relative;
+            transition: background-color 0.3s;
+        }
+
+        .theme-toggle label::before {
+            content: '☀️';
+            position: absolute;
+            left: 5px;
+            font-size: 18px;
+            transition: opacity 0.3s;
+        }
+
+        .theme-toggle label::after {
+            content: '';
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            background-color: white;
+            border-radius: 50%;
+            left: 3px;
+            transition: transform 0.3s, background-color 0.3s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .theme-toggle input:checked+label {
+            background-color: var(--primary-color);
+        }
+
+        .theme-toggle input:checked+label::before {
+            content: '🌙';
+            left: auto;
+            right: 5px;
+        }
+
+        .theme-toggle input:checked+label::after {
+            transform: translateX(30px);
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Статус індикатор -->
+    <div class="status-indicator">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Завантаження...</span>
+    </div>
+
+    <!-- Перемикач теми -->
+    <div class="theme-toggle">
+        <input type="checkbox" id="theme-switch">
+        <label for="theme-switch"></label>
+    </div>
+
+    <h1 style="margin-top: 0px;">Рівні заряду систем (не використовуйте ліфт при залишку менше 20%):</h1>
+    <p class="subtitle">Натисніть на свій ліфт щоб приховати інші, повторно щоб відобразити<br><small>Дані отримуються з
+            DeyeCloud API (оновлення кожні 5 хвилин)</small></p>
+    <div class="battery-grid" id="battery-grid">
+    </div>
+
+    <div class="footer">
+        <p style="margin-top: 0px;">
+            Отримати сповіщення про світло:
+            <a href="https://t.me/svitlobot_dragomanova2a" target="_blank">
+                Бот «СвітлоБот» (Драгоманова 2А)
+            </a>
+        </p>
+    </div>
+
+    <script>
+        const BATTERY_NAMES = { 1: "Ліфт п1", 2: "Ліфт п2", 3: "Ліфт п3", 4: "Вода", 5: "Опалення", 6: "Опалення 2" };
+
+        // Cloudflare Pages Functions API endpoint
+        const API_URL = '/api/battery';
+
+        // Локальний кеш для зменшення запитів
+        const CACHE_KEY = 'battery_data_cache';
+        const CACHE_TTL = 5 * 60 * 1000; // 5 хвилин в мілісекундах
+        const UPDATE_INTERVAL = 5 * 60 * 1000; // Оновлення кожні 5 хвилин (замість 10 секунд!)
+
+        const grid = document.getElementById('battery-grid');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+
+        // Ініціалізація DOM
+        for (const id in BATTERY_NAMES) {
+            const name = BATTERY_NAMES[id];
+            const unit = document.createElement('div');
+            unit.className = 'indicator-unit';
+            unit.setAttribute('data-id', id);
+
+            // Додаємо клас elevator для перших трьох (ліфтів)
+            if (id <= 3) {
+                unit.classList.add('elevator');
+            }
+
+            unit.innerHTML = `
+                <h2 class="system-title">${name}</h2>
+                <div class="battery-container" id="container-${id}">
+                    <div class="battery-fill" id="fill-${id}"></div>
+                    <div class="battery-level" id="level-${id}">--%</div>
+                </div>
+                <div class="timestamp-text" id="time-${id}">Останнє оновлення: Н/Д</div>
+            `;
+            grid.appendChild(unit);
+        }
+
+        // Логіка показу/приховування ліфтів
+        let activeElevator = null;
+
+        function toggleElevators(clickedId) {
+            const elevators = document.querySelectorAll('.indicator-unit.elevator');
+
+            if (activeElevator === clickedId) {
+                // Повторний клік - показуємо всі
+                elevators.forEach(el => el.classList.remove('hidden'));
+                activeElevator = null;
+            } else {
+                // Перший клік - ховаємо інші
+                elevators.forEach(el => {
+                    const id = el.getAttribute('data-id');
+                    if (id !== clickedId) {
+                        el.classList.add('hidden');
+                    } else {
+                        el.classList.remove('hidden');
+                    }
+                });
+                activeElevator = clickedId;
+            }
+        }
+
+        // Додаємо обробники кліків для ліфтів
+        document.querySelectorAll('.indicator-unit.elevator').forEach(unit => {
+            unit.addEventListener('click', () => {
+                const id = unit.getAttribute('data-id');
+                toggleElevators(id);
+            });
+        });
+
+        function formatTimestamp(isoString) {
+            if (!isoString) return 'Н/Д';
+            try {
+                const date = new Date(isoString);
+                return date.toLocaleDateString('uk-UA') + ' ' + date.toLocaleTimeString('uk-UA');
+            } catch (e) {
+                return 'Невірний формат часу';
+            }
+        }
+
+        // Оновлення статусу
+        function updateStatus(status, text) {
+            statusDot.className = 'status-dot';
+            if (status === 'offline') {
+                statusDot.classList.add('offline');
+            } else if (status === 'cached') {
+                statusDot.classList.add('cached');
+            }
+            statusText.textContent = text;
+        }
+
+        // Отримання даних з локального кешу
+        function getCachedData() {
+            try {
+                const cached = localStorage.getItem(CACHE_KEY);
+                if (cached) {
+                    const { data, timestamp } = JSON.parse(cached);
+                    const age = Date.now() - timestamp;
+                    if (age < CACHE_TTL) {
+                        return { data, fromCache: true, age };
+                    }
+                }
+            } catch (e) {
+                console.error('Cache read error:', e);
+            }
+            return null;
+        }
+
+        // Збереження даних в локальний кеш
+        function setCachedData(data) {
+            try {
+                localStorage.setItem(CACHE_KEY, JSON.stringify({
+                    data,
+                    timestamp: Date.now()
+                }));
+            } catch (e) {
+                console.error('Cache write error:', e);
+            }
+        }
+
+        // Відображення даних батарей
+        function displayBatteryData(batteries) {
+            batteries.forEach(data => {
+                const { id, name, level, timestamp } = data;
+                const levelEl = document.getElementById(`level-${id}`);
+                const timeEl = document.getElementById(`time-${id}`);
+                const fillEl = document.getElementById(`fill-${id}`);
+
+                if (levelEl && fillEl) {
+                    levelEl.textContent = `${level}%`;
+                    timeEl.textContent = `Оновлено: ${formatTimestamp(timestamp)}`;
+
+                    // Оновлюємо візуальне заповнення (горизонтально)
+                    fillEl.style.width = `${level}%`;
+
+                    levelEl.classList.remove('color-success', 'color-warning', 'color-danger');
+
+                    // Визначаємо колір заповнення
+                    let fillColor;
+                    if (level <= 20) {
+                        levelEl.classList.add('color-danger');
+                        fillColor = 'linear-gradient(90deg, var(--danger-color) 0%, #c0392b 100%)';
+                    } else if (level <= 50) {
+                        levelEl.classList.add('color-warning');
+                        fillColor = 'linear-gradient(90deg, var(--warning-color) 0%, #e67e22 100%)';
+                    } else {
+                        levelEl.classList.add('color-success');
+                        fillColor = 'linear-gradient(90deg, var(--success-color) 0%, #27ae60 100%)';
+                    }
+
+                    fillEl.style.background = fillColor;
+                }
+            });
+        }
+
+        async function updateBatteryStatus() {
+            // Спочатку спробуємо з кешу
+            const cached = getCachedData();
+
+            if (cached) {
+                displayBatteryData(cached.data);
+                const ageMinutes = Math.floor(cached.age / 60000);
+                updateStatus('cached', `Кеш (${ageMinutes} хв тому)`);
+
+                // Якщо кеш свіжий, не робимо запит
+                if (cached.age < CACHE_TTL / 2) {
+                    return;
+                }
+            }
+
+            try {
+                updateStatus('loading', 'Оновлення...');
+
+                const response = await fetch(API_URL, {
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const result = await response.json();
+
+                // Перевірка на помилки у відповіді
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+
+                const batteries = result.data || result;
+
+                // Зберігаємо в кеш
+                setCachedData(batteries);
+
+                // Відображаємо
+                displayBatteryData(batteries);
+                updateStatus('online', 'Онлайн');
+
+            } catch (error) {
+                console.error('Помилка при отриманні даних:', error);
+
+                // Якщо є кешовані дані, використовуємо їх
+                if (cached) {
+                    displayBatteryData(cached.data);
+                    updateStatus('offline', 'Офлайн (кеш)');
+                } else {
+                    updateStatus('offline', 'Помилка');
+                }
+            }
+        }
+
+        // Логіка перемикача теми
+        const themeSwitch = document.getElementById('theme-switch');
+        const currentTheme = localStorage.getItem('theme') || 'light';
+
+        // Встановлюємо збережену тему
+        if (currentTheme === 'dark') {
+            document.body.classList.add('dark-theme');
+            themeSwitch.checked = true;
+        }
+
+        // Обробник перемикання теми
+        themeSwitch.addEventListener('change', function () {
+            if (this.checked) {
+                document.body.classList.add('dark-theme');
+                localStorage.setItem('theme', 'dark');
+            } else {
+                document.body.classList.remove('dark-theme');
+                localStorage.setItem('theme', 'light');
+            }
+        });
+
+        // Перший запуск
+        updateBatteryStatus();
+
+        // Оновлення кожні 5 хвилин замість 10 секунд - економія запитів!
+        setInterval(updateBatteryStatus, UPDATE_INTERVAL);
+
+        // Реєстрація Service Worker для PWA
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js')
+                .then(reg => console.log('SW registered'))
+                .catch(err => console.log('SW registration failed:', err));
+        }
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,21 @@
+# Cloudflare Pages конфігурація
+# Wrangler потрібен для локального тестування та деплою
+
+name = "battery-status"
+compatibility_date = "2024-01-01"
+pages_build_output_dir = "./"
+
+# KV Namespace для кешування
+# Створіть через: wrangler kv:namespace create "DEYE_CACHE"
+# Потім додайте ID сюди:
+# [[kv_namespaces]]
+# binding = "DEYE_CACHE"
+# id = "YOUR_KV_NAMESPACE_ID"
+
+# Environment Variables налаштовуються в Cloudflare Dashboard:
+# Settings -> Environment Variables
+# - DEYE_APP_ID
+# - DEYE_APP_SECRET (secret)
+# - DEYE_EMAIL
+# - DEYE_PASSWORD (secret)
+# - DEYE_REGION = EU
