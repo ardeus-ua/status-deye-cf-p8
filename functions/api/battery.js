@@ -66,7 +66,7 @@ async function getAccessToken(env) {
     }
 
     // Запит нового токена
-    const baseUrl = 'https://global-api.solarmanpv.com';
+    const baseUrl = 'https://api.solarmanpv.com';
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
     // URL params for authentication
@@ -118,7 +118,7 @@ async function getAccessToken(env) {
  * Отримання SOC для інвертора
  */
 async function getInverterSOC(token, serialNumber) {
-    const baseUrl = 'https://global-api.solarmanpv.com';
+    const baseUrl = 'https://api.solarmanpv.com';
 
     // Solarman API endpoint for current data
     const response = await fetch(`${baseUrl}/device/v1.0/currentData?appId=${SOLARMAN_APP_ID}&language=en&sn=${serialNumber}`, {
