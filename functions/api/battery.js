@@ -74,7 +74,7 @@ async function getAccessToken(env) {
     }
 
     // Запит нового токена
-    const baseUrl = getBaseUrl(env.DEYE_REGION || 'EU');
+    const baseUrl = getBaseUrl(env.DEYE_REGION || 'CN');
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
     const authData = {
