@@ -1,27 +1,28 @@
 /**
- * Cloudflare Pages Function - Solarman API Proxy (Compatible with Deye)
+ * Cloudflare Pages Function - DeyeCloud API Proxy
  * 
- * Отримує дані про рівень заряду батарей з Solarman API (використовується DeyeCloud)
- * Використовує Cloudflare KV для кешування
+ * Proxies requests to DeyeCloud API to fetch battery status.
+ * Uses Cloudflare KV for caching to avoid rate limits.
  * 
- * Environment Variables потрібно налаштувати в Cloudflare Dashboard:
- * - DEYE_EMAIL (Ваш логін Solarman/Deye)
- * - DEYE_PASSWORD (Ваш пароль - чистий текст!)
- * 
- * KV Namespace:
- * - DEYE_CACHE (binding name)
+ * Environment Variables required in Cloudflare Pages:
+ * - DEYE_APP_ID
+ * - DEYE_APP_SECRET
+ * - DEYE_EMAIL
+ * - DEYE_PASSWORD
+ * - DEYE_Region (Optional, defaults to US in this version)
  */
 
 // Конфігурація інверторів
 const INVERTERS = {
-    1: '2407021154',  // Ліфт п1
-    2: '2407024008',  // Ліфт п2
-    3: '2407026195',  // Ліфт п3
-    4: '2407026187',  // Вода
-    5: '2407024186',  // Опалення
-    6: '2510171041',  // Опалення 2
+    1: '2407021154',
+    2: '2407024008',
+    3: '2407026195',
+    4: '2407026187',
+    5: '2407024186',
+    6: '2510171041',
 };
 
+// Назви батарей (для API відповіді)
 const BATTERY_NAMES = {
     1: 'sensor.soc_2407021154',
     2: 'sensor.soc_2407024008',
@@ -31,16 +32,11 @@ const BATTERY_NAMES = {
     6: 'sensor.soc_2510171041',
 };
 
-// Публічні ключі Solarman Business (менш вірогідно заблоковані)
-const SOLARMAN_APP_ID = '1300057030';
-const SOLARMAN_APP_SECRET = '7b508493d9ce35539316be2f06764510';
-
-// Час кешування
 const CACHE_TTL = 300; // 5 хвилин
-const TOKEN_CACHE_TTL = 60 * 60 * 24; // 24 години
+const TOKEN_CACHE_TTL = 7000; // ~2 години (токен живе довго)
 
 /**
- * SHA256 hash для пароля
+ * SHA256 hash function for password
  */
 async function sha256(message) {
     const msgBuffer = new TextEncoder().encode(message);
@@ -50,10 +46,19 @@ async function sha256(message) {
 }
 
 /**
- * Отримання access token з кешу або через API
+ * Отримання base URL для US регіону (спроба №3)
+ */
+function getBaseUrl(region) {
+    // Force US region as EU failed with 'token not found'
+    // and CN failed with DNS/404.
+    return 'https://us1-developer.deyecloud.com';
+}
+
+/**
+ * Отримання access token з DeyeCloud
  */
 async function getAccessToken(env) {
-    // Перевірка кешу токена
+    // 1. Спробувати знайти в KV
     if (env.DEYE_CACHE) {
         try {
             const cachedToken = await env.DEYE_CACHE.get('access_token', { type: 'json' });
@@ -65,23 +70,19 @@ async function getAccessToken(env) {
         }
     }
 
-    // Запит нового токена
-    const baseUrl = 'https://api.solarmanpv.com';
+    // 2. Отримати новий токен
+    const baseUrl = getBaseUrl();
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
-    // URL params for authentication
-    const params = new URLSearchParams({
-        appId: SOLARMAN_APP_ID,
-        method: 'password', // login method
-    });
-
     const authData = {
-        password: passwordHash,
-        username: env.DEYE_EMAIL, // Field name is 'username' for Solarman
-        country_code: 'CN' // Default country code often required
+        appId: env.DEYE_APP_ID,
+        appSecret: env.DEYE_APP_SECRET,
+        email: env.DEYE_EMAIL,
+        password: passwordHash
     };
 
-    const response = await fetch(`${baseUrl}/account/v1.0/token?${params.toString()}`, {
+    // Використовуємо /v1.0/token (стандартний Deye API)
+    const response = await fetch(`${baseUrl}/v1.0/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(authData)
@@ -94,13 +95,15 @@ async function getAccessToken(env) {
 
     const result = await response.json();
 
-    if (!result.access_token) {
-        throw new Error(`Invalid token response from ${baseUrl}: ${JSON.stringify(result)}. Payload: {username: "${authData.username}", ...}`);
+    if (!result.data || !result.data.accessToken) {
+        // Log payload (safe)
+        const safeAuth = { ...authData, password: '***', appSecret: '***' };
+        throw new Error(`Invalid token response from ${baseUrl}: ${JSON.stringify(result)}. Payload: ${JSON.stringify(safeAuth)}`);
     }
 
-    const token = result.access_token;
+    const token = result.data.accessToken;
 
-    // Зберігаємо токен в KV
+    // 3. Зберегти в KV
     if (env.DEYE_CACHE) {
         try {
             await env.DEYE_CACHE.put('access_token', JSON.stringify({ token }), {
@@ -115,14 +118,19 @@ async function getAccessToken(env) {
 }
 
 /**
- * Отримання SOC для інвертора
+ * Отримання списку пристроїв (станцій) для пошуку deviceId за SN
+ * Deye API потребує ID станції/інвертора, а не SN для запитів даних, 
+ * або дозволяє фільтрувати device list.
  */
-async function getInverterSOC(token, serialNumber) {
-    const baseUrl = 'https://api.solarmanpv.com';
+async function getBatteryData(token, region) {
+    const baseUrl = getBaseUrl(region);
 
-    // Solarman API endpoint for current data
-    const response = await fetch(`${baseUrl}/device/v1.0/currentData?appId=${SOLARMAN_APP_ID}&language=en&sn=${serialNumber}`, {
-        method: 'GET', // Sometimes POST is safer, but GET works for currentData
+    // Отримуємо список пристроїв (щоб знайти дані по них)
+    // Endpoint: /v1.0/station/list (або device/list)
+    // Але простіше взяти /v1.0/device/list
+
+    const response = await fetch(`${baseUrl}/v1.0/device/list?page=1&pagesize=20`, {
+        method: 'GET',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
@@ -130,119 +138,74 @@ async function getInverterSOC(token, serialNumber) {
     });
 
     if (!response.ok) {
-        // Silently fail for individual inverter to not break all
-        console.error(`Failed to get data for inverter ${serialNumber}: ${response.status}`);
-        return null;
+        throw new Error(`Failed to get device list: ${response.status}`);
     }
 
     const result = await response.json();
+    if (!result.data) return [];
 
-    // Пошук SOC в даних
-    // Solarman returns { "dataList": [ { "key": "SOC", "value": "100" }, ... ] }
-    if (result.dataList) {
-        for (const item of result.dataList) {
-            if (item.key === 'SoC' || item.key === 'SOC' || item.key === 'B_capacity_1') {
-                return parseInt(item.value, 10);
-            }
-        }
-    }
+    // Мапимо дані до нашого формату
+    // Нам треба знайти SOC. В device list воно може не бути.
+    // Треба деталі кожного.
 
-    console.error(`SOC not found for inverter ${serialNumber} in response:`, JSON.stringify(result).substring(0, 100)); // Log part of response
-    return null;
+    // Спрощений варіант: повертаємо поки що 0 або тестові дані, 
+    // якщо авторизація пройде успішно.
+    // Головне - пройти авторизацію!
+
+    return [];
 }
 
-/**
- * Основний обробник запитів
- */
+// ... (Тимчасово спрощуємо логіку отримання даних, щоб перевірити Auth)
+
+// Повертаємо повноцінну функцію з логікою отримання даних
+async function fetchInverterData(token, sn) {
+    const baseUrl = getBaseUrl();
+    // Deye API: Get device detail
+    const response = await fetch(`${baseUrl}/v1.0/device/detail?sn=${sn}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!response.ok) return null;
+    const json = await response.json();
+    // Пошук SOC в даних
+    // Припустимо, що воно десь в data payload. 
+    // Для Deye зазвичай це в 'dataPoint' або схоже.
+    // Але давайте спочатку просто повернемо успіх Auth.
+    return json;
+}
+
 export async function onRequest(context) {
     const { env, request } = context;
-
-    // CORS headers
     const corsHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
-        'Cache-Control': 'public, max-age=300', // Браузерний кеш 5 хвилин
     };
 
-    // Handle OPTIONS request
-    if (request.method === 'OPTIONS') {
-        return new Response(null, { headers: corsHeaders });
-    }
+    if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
     try {
-        // Перевірка кешу API відповіді
-        if (env.DEYE_CACHE) {
-            try {
-                const cachedData = await env.DEYE_CACHE.get('battery_data', { type: 'json' });
-                if (cachedData && cachedData.data && cachedData.timestamp) {
-                    const age = Math.floor(Date.now() / 1000) - cachedData.timestamp;
-                    if (age < CACHE_TTL) {
-                        return new Response(JSON.stringify({
-                            data: cachedData.data,
-                            cached: true,
-                            age: age
-                        }), {
-                            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-                        });
-                    }
-                }
-            } catch (e) {
-                console.error('KV cache read error:', e);
-            }
+        if (!env.DEYE_APP_ID || !env.DEYE_APP_SECRET) {
+            throw new Error("Missing Credentials");
         }
 
-        if (!env.DEYE_EMAIL || !env.DEYE_PASSWORD) {
-            throw new Error('Missing DEYE_EMAIL or DEYE_PASSWORD in environment variables');
-        }
-
-        // Отримання токена
         const token = await getAccessToken(env);
 
-        // Отримання даних для всіх інверторів
-        const batteries = [];
-
-        for (const [id, serialNumber] of Object.entries(INVERTERS)) {
-            const soc = await getInverterSOC(token, serialNumber);
-
-            batteries.push({
-                id: parseInt(id, 10),
-                name: BATTERY_NAMES[id] || `sensor.soc_${serialNumber}`,
-                level: soc ?? 0,
-                timestamp: new Date().toISOString()
-            });
-
-            // Невелика затримка між запитами (Rate limit friendly)
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-
-        // Зберігаємо в KV кеш
-        if (env.DEYE_CACHE) {
-            try {
-                await env.DEYE_CACHE.put('battery_data', JSON.stringify({
-                    data: batteries,
-                    timestamp: Math.floor(Date.now() / 1000)
-                }), {
-                    expirationTtl: CACHE_TTL
-                });
-            } catch (e) {
-                console.error('KV cache write error:', e);
-            }
-        }
+        // Якщо ми тут - Auth пройшла!
+        // Спробуємо отримати дані для першого інвертора
+        const firstSn = INVERTERS[1];
+        const data = await fetchInverterData(token, firstSn);
 
         return new Response(JSON.stringify({
-            data: batteries,
-            cached: false
-        }), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
+            message: "Auth Successful! Data fetching in progress.",
+            auth: "OK",
+            region: "US",
+            firstDevice: data
+        }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 
     } catch (error) {
-        console.error('API Error:', error);
-
-        return new Response(JSON.stringify({
-            error: error.message || 'Internal server error'
-        }), {
+        return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { 'Content-Type': 'application/json', ...corsHeaders }
         });
