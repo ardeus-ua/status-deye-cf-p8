@@ -32,8 +32,8 @@ const BATTERY_NAMES = {
 };
 
 // Публічні ключі Solarman Smart (використовуються в open-source проектах)
-const SOLARMAN_APP_ID = '2101010101';
-const SOLARMAN_APP_SECRET = 'c39870c9b5e5a999';
+const SOLARMAN_APP_ID = '1654060959';
+const SOLARMAN_APP_SECRET = '87910900e5a6fc6c855364817a398033';
 
 // Час кешування
 const CACHE_TTL = 300; // 5 хвилин
