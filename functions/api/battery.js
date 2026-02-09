@@ -43,8 +43,8 @@ const TOKEN_CACHE_TTL = 60 * 24 * 60 * 60; // 60 днів
  */
 function getBaseUrl(region) {
     if (region === 'US') return 'https://us1-developer.deyecloud.com';
-    if (region === 'CN' || region === 'GLOBAL') return 'https://api.deye.com.cn';
-    return 'https://eu1-developer.deyecloud.com'; // Default to EU
+    // Map CN/GLOBAL to EU as per documentation for APAC
+    return 'https://eu1-developer.deyecloud.com';
 }
 
 /**
@@ -74,17 +74,17 @@ async function getAccessToken(env) {
     }
 
     // Запит нового токена
-    const baseUrl = getBaseUrl(env.DEYE_REGION || 'CN');
+    const baseUrl = getBaseUrl(env.DEYE_REGION || 'EU');
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
     const authData = {
         appId: env.DEYE_APP_ID,
         appSecret: env.DEYE_APP_SECRET,
-        account: env.DEYE_EMAIL,
+        email: env.DEYE_EMAIL,
         password: passwordHash
     };
 
-    const response = await fetch(`${baseUrl}/v1.0/account/login`, {
+    const response = await fetch(`${baseUrl}/v1.0/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(authData)
