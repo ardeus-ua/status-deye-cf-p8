@@ -78,9 +78,7 @@ async function getAccessToken(env) {
     const passwordHash = await sha256(env.DEYE_PASSWORD);
 
     const authData = {
-        appId: env.DEYE_APP_ID,
-        appSecret: env.DEYE_APP_SECRET,
-        account: env.DEYE_EMAIL, // Deye uses 'account' field for login endpoint
+        account: env.DEYE_EMAIL,
         password: passwordHash
     };
 
@@ -91,13 +89,14 @@ async function getAccessToken(env) {
     });
 
     if (!response.ok) {
-        throw new Error(`Failed to get token: ${response.status}`);
+        const text = await response.text();
+        throw new Error(`Failed to get token from ${baseUrl}: ${response.status} ${text}`);
     }
 
     const result = await response.json();
 
     if (!result.data?.token) {
-        throw new Error(`Invalid token response: ${JSON.stringify(result)}`);
+        throw new Error(`Invalid token response from ${baseUrl}: ${JSON.stringify(result)}. Payload: ${JSON.stringify({ ...authData, password: '***' })}`);
     }
 
     const token = result.data.token;
