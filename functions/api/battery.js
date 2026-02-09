@@ -80,11 +80,11 @@ async function getAccessToken(env) {
     const authData = {
         appId: env.DEYE_APP_ID,
         appSecret: env.DEYE_APP_SECRET,
-        email: env.DEYE_EMAIL,
+        account: env.DEYE_EMAIL, // Deye uses 'account' field for login endpoint
         password: passwordHash
     };
 
-    const response = await fetch(`${baseUrl}/v1.0/token`, {
+    const response = await fetch(`${baseUrl}/v1.0/account/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(authData)
