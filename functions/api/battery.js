@@ -31,9 +31,9 @@ const BATTERY_NAMES = {
     6: 'sensor.soc_2510171041',
 };
 
-// Публічні ключі Solarman Smart (використовуються в open-source проектах)
-const SOLARMAN_APP_ID = '1654060959';
-const SOLARMAN_APP_SECRET = '87910900e5a6fc6c855364817a398033';
+// Публічні ключі Deye Cloud (можуть працювати, якщо Solarman заблоковані)
+const SOLARMAN_APP_ID = '1200388484';
+const SOLARMAN_APP_SECRET = 'c6d15c9a72dfc0ae4440026e38289748';
 
 // Час кешування
 const CACHE_TTL = 300; // 5 хвилин
