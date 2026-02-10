@@ -1,8 +1,7 @@
 /**
- * Debug: find the correct device data endpoint
+ * Debug: try different auth methods for device/list
  */
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
-const SN = '2407021154';
 
 async function sha256(text) {
     const enc = new TextEncoder();
@@ -31,26 +30,59 @@ export async function onRequest(context) {
     const { env, request } = context;
     const h = { 'Content-Type': 'application/json; charset=utf-8' };
     const url = new URL(request.url);
-    const sn = url.searchParams.get('sn') || SN;
+    const sn = url.searchParams.get('sn') || '2407021154';
 
     try {
         const token = await getToken(env);
 
-        // The PHP code used GET /v1.0/device/list?sn=XXX but our API said "GET not supported"
-        // Let's try various approaches:
         const endpoints = [
-            // POST with sn as query param (like the token endpoint uses appId as query)
-            { name: 'device/list POST sn-query', url: `${BASE_URL}/v1.0/device/list?sn=${sn}`, method: 'POST', body: {} },
-            // POST with page/size like station/list
-            { name: 'device/list POST page+sn-query', url: `${BASE_URL}/v1.0/device/list?sn=${sn}`, method: 'POST', body: { page: 1, size: 10 } },
-            // POST with stationId (from station/list) - station ID for Ліфти 1 парадне = 61392915
-            { name: 'device/list POST stationId', url: `${BASE_URL}/v1.0/device/list`, method: 'POST', body: { stationId: 61392915, page: 1, size: 10 } },
-            // Try v2.0
-            { name: 'v2 device/list POST sn', url: `${BASE_URL}/v2.0/device/list?sn=${sn}`, method: 'POST', body: {} },
-            // device/state
-            { name: 'device/state POST', url: `${BASE_URL}/v1.0/device/state`, method: 'POST', body: { deviceSn: sn } },
-            // device/data POST
-            { name: 'device/data POST', url: `${BASE_URL}/v1.0/device/data`, method: 'POST', body: { deviceSn: sn } },
+            // Try token as custom header instead of Bearer
+            {
+                name: 'device/list POST token-header',
+                url: `${BASE_URL}/v1.0/device/list?sn=${sn}`,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'token': token },
+                body: {},
+            },
+            // Try token as query parameter
+            {
+                name: 'device/list POST token-query',
+                url: `${BASE_URL}/v1.0/device/list?sn=${sn}&token=${token}`,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: {},
+            },
+            // GET with token header (not Bearer)
+            {
+                name: 'device/list GET token-header',
+                url: `${BASE_URL}/v1.0/device/list?sn=${sn}`,
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json', 'token': token },
+            },
+            // POST with appId+token combo
+            {
+                name: 'device/list POST appId+token',
+                url: `${BASE_URL}/v1.0/device/list?sn=${sn}`,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'token': token },
+                body: {},
+            },
+            // station detail endpoint
+            {
+                name: 'station/detail POST',
+                url: `${BASE_URL}/v1.0/station/detail`,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: { stationId: 61392915 },
+            },
+            // device/page POST with stationId
+            {
+                name: 'device/page POST',
+                url: `${BASE_URL}/v1.0/device/page`,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: { stationId: 61392915, page: 1, size: 10 },
+            },
         ];
 
         const results = {};
@@ -58,12 +90,12 @@ export async function onRequest(context) {
             try {
                 const opts = {
                     method: ep.method || 'GET',
-                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    headers: ep.headers,
                 };
                 if (ep.body !== undefined) opts.body = JSON.stringify(ep.body);
                 const r = await fetch(ep.url, opts);
                 const t = await r.text();
-                let p; try { p = JSON.parse(t); } catch (e) { p = t.substring(0, 500); }
+                let p; try { p = JSON.parse(t); } catch (e) { p = t.substring(0, 1000); }
                 results[ep.name] = { status: r.status, data: p };
             } catch (e) { results[ep.name] = { error: e.message }; }
         }
