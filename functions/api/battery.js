@@ -2,6 +2,7 @@
  * Cloudflare Pages Function — DeyeCloud API Proxy
  * 
  * Отримує дані про рівень заряду батарей з DeyeCloud API.
+ * Використовує /v1.0/station/list для отримання batterySOC.
  * Кешує токен (60 днів) та дані (5 хв) через Cloudflare KV.
  * 
  * Environment Variables (Cloudflare Dashboard → Pages → Settings):
@@ -14,25 +15,22 @@
  *   DEYE_CACHE       — для кешування токена і даних
  */
 
-// Маппінг: id → серійний номер інвертора
-const INVERTERS = {
-    1: '2407021154',  // Ліфт п1
-    2: '2407024008',  // Ліфт п2
-    3: '2407026195',  // Ліфт п3
-    4: '2407026187',  // Вода
-    5: '2407024186',  // Опалення
-    6: '2510171041',  // Опалення 2
+// Маппінг: id → stationId (з DeyeCloud /v1.0/station/list)
+const STATIONS = {
+    1: { stationId: 61392915, name: 'Ліфти 1 парадне' },  // Ліфт п1
+    2: { stationId: 61392916, name: 'Ліфти 2 парадне' },  // Ліфт п2
+    3: { stationId: 61392918, name: 'Ліфти 3 парадне' },  // Ліфт п3
+    4: { stationId: 61392925, name: 'Насосна 2-а' },       // Вода
+    5: { stationId: 61392922, name: 'ІТП 2-а' },           // Опалення
+    // TODO: Опалення 2 — потрібно уточнити stationId
 };
 
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
-const DATA_CACHE_TTL = 300;   // 5 хвилин (секунди)
+const DATA_CACHE_TTL = 300;      // 5 хвилин (секунди)
 const TOKEN_CACHE_TTL = 5184000; // 60 днів (секунди)
 
 // ─── Утиліти ──────────────────────────────────────────────
 
-/**
- * SHA-256 хеш пароля (lowercase hex)
- */
 async function sha256(text) {
     const encoder = new TextEncoder();
     const data = encoder.encode(text);
@@ -41,20 +39,14 @@ async function sha256(text) {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * CORS заголовки
- */
 function corsHeaders() {
     return {
         'Content-Type': 'application/json; charset=utf-8',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300', // 5 хвилин CDN кеш
+        'Cache-Control': 'public, max-age=300',
     };
 }
 
-/**
- * JSON відповідь помилки
- */
 function errorResponse(message, status = 500) {
     return new Response(
         JSON.stringify({ error: message }),
@@ -62,7 +54,7 @@ function errorResponse(message, status = 500) {
     );
 }
 
-// ─── KV кеш обгортки ─────────────────────────────────────
+// ─── KV кеш ──────────────────────────────────────────────
 
 async function kvGet(kv, key) {
     if (!kv) return null;
@@ -86,9 +78,6 @@ async function kvPut(kv, key, value, ttl) {
 
 // ─── DeyeCloud Auth ───────────────────────────────────────
 
-/**
- * Отримати access token з кешу або через API
- */
 async function getAccessToken(env) {
     const kv = env.DEYE_CACHE || null;
 
@@ -99,109 +88,58 @@ async function getAccessToken(env) {
     }
 
     // 2. Перевіряємо наявність credentials
-    const appId = env.DEYE_APP_ID;
-    const appSecret = env.DEYE_APP_SECRET;
-    const email = env.DEYE_EMAIL;
-    const password = env.DEYE_PASSWORD;
+    const { DEYE_APP_ID: appId, DEYE_APP_SECRET: appSecret, DEYE_EMAIL: email, DEYE_PASSWORD: password } = env;
 
     if (!appId || !appSecret || !email || !password) {
-        throw new Error(
-            'Missing credentials. Set DEYE_APP_ID, DEYE_APP_SECRET, DEYE_EMAIL, DEYE_PASSWORD in Cloudflare Dashboard.'
-        );
+        throw new Error('Missing credentials. Set DEYE_APP_ID, DEYE_APP_SECRET, DEYE_EMAIL, DEYE_PASSWORD.');
     }
 
     // 3. Хешуємо пароль SHA256
     const passwordHash = await sha256(password);
 
-    // 4. Запит токена (appId — query параметр, решта — body)
+    // 4. Запит токена
     const response = await fetch(`${BASE_URL}/v1.0/account/token?appId=${appId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            appSecret,
-            email,
-            password: passwordHash,
-        }),
+        body: JSON.stringify({ appSecret, email, password: passwordHash }),
     });
 
-    const text = await response.text();
+    const result = await response.json();
 
-    if (!response.ok) {
-        throw new Error(`Token request failed: HTTP ${response.status} — ${text.substring(0, 300)}`);
+    if (!result.success) {
+        throw new Error(`DeyeCloud auth error: ${result.msg || JSON.stringify(result).substring(0, 200)}`);
     }
 
-    let result;
-    try {
-        result = JSON.parse(text);
-    } catch (e) {
-        throw new Error(`Invalid JSON from token endpoint: ${text.substring(0, 300)}`);
-    }
-
-    if (!result.success && result.code) {
-        throw new Error(`DeyeCloud error ${result.code}: ${result.msg || 'Unknown error'}`);
-    }
-
-    const token = result?.accessToken || result?.data?.accessToken || result?.data?.token;
+    const token = result.accessToken || result?.data?.accessToken || result?.data?.token;
     if (!token) {
-        throw new Error(`No token in response: ${JSON.stringify(result).substring(0, 300)}`);
+        throw new Error(`No token in response: ${JSON.stringify(result).substring(0, 200)}`);
     }
 
-    // 5. Кешуємо токен (60 днів)
+    // 5. Кешуємо токен
     await kvPut(kv, 'deye_token', { token, createdAt: Date.now() }, TOKEN_CACHE_TTL);
 
     return token;
 }
 
-// ─── Отримання даних інвертора ────────────────────────────
+// ─── Отримання даних станцій ──────────────────────────────
 
-/**
- * Отримати SOC та grid_freq для одного інвертора
- */
-async function getInverterData(token, serialNumber) {
-    const url = `${BASE_URL}/v1.0/device/list?sn=${serialNumber}`;
-
-    const response = await fetch(url, {
-        method: 'GET',
+async function fetchStationList(token) {
+    const response = await fetch(`${BASE_URL}/v1.0/station/list`, {
+        method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
         },
+        body: JSON.stringify({ page: 1, size: 50 }),
     });
 
-    const text = await response.text();
+    const result = await response.json();
 
-    if (!response.ok) {
-        console.error(`Device ${serialNumber}: HTTP ${response.status} — ${text.substring(0, 200)}`);
-        return { soc: null, gridFreq: null };
+    if (!result.success || !result.stationList) {
+        throw new Error(`Station list error: ${result.msg || JSON.stringify(result).substring(0, 200)}`);
     }
 
-    let result;
-    try {
-        result = JSON.parse(text);
-    } catch (e) {
-        console.error(`Device ${serialNumber}: Invalid JSON — ${text.substring(0, 200)}`);
-        return { soc: null, gridFreq: null };
-    }
-
-    // Шукаємо SOC і grid frequency у dataList
-    let soc = null;
-    let gridFreq = null;
-
-    const dataList = result?.data?.list?.[0]?.dataList || result?.data?.dataList || [];
-
-    for (const item of dataList) {
-        const key = (item.key || '').toLowerCase();
-        const name = (item.name || '').toLowerCase();
-
-        if (key === 'soc' || key === 'battery_soc' || name === 'soc') {
-            soc = parseFloat(item.value);
-        }
-        if (key === 'grid_frequency' || key === 'gridfrequency' || name.includes('grid') && name.includes('freq')) {
-            gridFreq = parseFloat(item.value);
-        }
-    }
-
-    return { soc, gridFreq };
+    return result.stationList;
 }
 
 // ─── Головний обробник ──────────────────────────────────
@@ -209,7 +147,7 @@ async function getInverterData(token, serialNumber) {
 export async function onRequest(context) {
     const { env, request } = context;
 
-    // Обробка CORS preflight
+    // CORS preflight
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             headers: {
@@ -238,37 +176,59 @@ export async function onRequest(context) {
         // 2. Отримуємо токен
         const token = await getAccessToken(env);
 
-        // 3. Отримуємо дані всіх інверторів паралельно
-        const entries = Object.entries(INVERTERS);
-        const results = await Promise.all(
-            entries.map(async ([id, sn]) => {
-                const data = await getInverterData(token, sn);
-                return {
-                    id: parseInt(id),
-                    name: `sensor.soc_${sn}`,
-                    level: data.soc !== null ? Math.round(data.soc) : 0,
-                    grid_freq: data.gridFreq !== null ? data.gridFreq : 0,
-                    timestamp: new Date().toISOString(),
-                };
-            })
-        );
+        // 3. Отримуємо список станцій (один запит замість N!)
+        const stationList = await fetchStationList(token);
 
-        // 4. Кешуємо результат
+        // 4. Маппінг stationId → наші батареї
+        const stationMap = {};
+        for (const station of stationList) {
+            stationMap[station.id] = station;
+        }
+
+        const batteries = [];
+        for (const [id, config] of Object.entries(STATIONS)) {
+            const station = stationMap[config.stationId];
+            const now = new Date().toISOString();
+
+            if (station) {
+                batteries.push({
+                    id: parseInt(id),
+                    name: config.name,
+                    level: station.batterySOC !== null && station.batterySOC !== undefined
+                        ? Math.round(station.batterySOC)
+                        : 0,
+                    grid_freq: station.connectionStatus === 'NORMAL' ? 50.0 : 0.0,
+                    timestamp: station.lastUpdateTime
+                        ? new Date(station.lastUpdateTime * 1000).toISOString()
+                        : now,
+                });
+            } else {
+                batteries.push({
+                    id: parseInt(id),
+                    name: config.name,
+                    level: 0,
+                    grid_freq: 0,
+                    timestamp: now,
+                });
+            }
+        }
+
+        // 5. Кешуємо
         await kvPut(kv, 'battery_data', {
-            batteries: results,
+            batteries,
             timestamp: Date.now(),
         }, DATA_CACHE_TTL);
 
-        // 5. Відповідь
+        // 6. Відповідь
         return new Response(
-            JSON.stringify({ data: results, cached: false }),
+            JSON.stringify({ data: batteries, cached: false }),
             { headers: corsHeaders() }
         );
 
     } catch (error) {
         console.error('Battery API error:', error.message);
 
-        // Якщо є кешовані дані, повертаємо їх навіть якщо протухли
+        // Fallback: stale cache
         const kv = env.DEYE_CACHE || null;
         const staleData = await kvGet(kv, 'battery_data');
         if (staleData && staleData.batteries) {
