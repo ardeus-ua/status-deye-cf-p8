@@ -82,7 +82,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            padding: 15px;
+            padding: 15px 8px;
             border: 1px solid var(--border-color);
             border-radius: 12px;
             background: var(--card-bg);
@@ -120,7 +120,7 @@
         }
 
         .battery-container {
-            width: 100px;
+            width: 140px;
             height: 60px;
             border: 3px solid var(--battery-border);
             border-radius: 8px;
@@ -172,6 +172,34 @@
                 1px 1px 2px rgba(0, 0, 0, 0.9),
                 -1px -1px 2px rgba(0, 0, 0, 0.9);
             filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+        }
+
+        .grid-status {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            z-index: 100;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            text-shadow:
+                -1px -1px 0 #000,
+                1px -1px 0 #000,
+                -1px 1px 0 #000,
+                1px 1px 0 #000;
+            pointer-events: none;
+        }
+
+        .grid-on {
+            color: #ffff00;
+            filter: drop-shadow(0 0 4px rgba(255, 255, 0, 0.8));
+            opacity: 1;
+            transform: scale(1.1);
+        }
+
+        .grid-off {
+            color: #555;
+            opacity: 0.35;
+            filter: grayscale(1);
         }
 
         .timestamp-text {
@@ -337,7 +365,8 @@
     </div>
 
     <h1 style="margin-top: 0px;">Рівні заряду систем (не використовуйте ліфт при залишку менше 20%):</h1>
-    <p class="subtitle">Натисніть на свій ліфт щоб приховати інші, повторно щоб відобразити<br><small>Дані оновлюються кожні 5 хвилин</small></p>
+    <p class="subtitle">Натисніть на свій ліфт щоб приховати інші, повторно щоб відобразити<br><small>Дані оновлюються
+            кожні 5 хвилин</small></p>
     <div class="battery-grid" id="battery-grid">
     </div>
 
@@ -380,6 +409,7 @@
             unit.innerHTML = `
                 <h2 class="system-title">${name}</h2>
                 <div class="battery-container" id="container-${id}">
+                    <div class="grid-status" id="grid-${id}" title="Статус мережі">⚡</div>
                     <div class="battery-fill" id="fill-${id}"></div>
                     <div class="battery-level" id="level-${id}">--%</div>
                 </div>
@@ -473,14 +503,26 @@
         // Відображення даних батарей
         function displayBatteryData(batteries) {
             batteries.forEach(data => {
-                const { id, name, level, timestamp } = data;
+                const { id, name, level, grid_freq, timestamp } = data;
                 const levelEl = document.getElementById(`level-${id}`);
                 const timeEl = document.getElementById(`time-${id}`);
+                const gridEl = document.getElementById(`grid-${id}`);
                 const fillEl = document.getElementById(`fill-${id}`);
 
                 if (levelEl && fillEl) {
                     levelEl.textContent = `${level}%`;
                     timeEl.textContent = `Оновлено: ${formatTimestamp(timestamp)}`;
+
+                    // Оновлюємо статус мережі
+                    if (gridEl) {
+                        if (grid_freq > 45) {
+                            gridEl.className = 'grid-status grid-on';
+                            gridEl.title = `Мережа Є (${grid_freq}Гц)`;
+                        } else {
+                            gridEl.className = 'grid-status grid-off';
+                            gridEl.title = `Мережі НЕМАЄ (${grid_freq}Гц)`;
+                        }
+                    }
 
                     // Оновлюємо візуальне заповнення (горизонтально)
                     fillEl.style.width = `${level}%`;
