@@ -1,6 +1,5 @@
 /**
- * Debug v5: Probe station/device to get individual inverters for Heating (averaging)
- * and look for grid voltage/freq data.
+ * Debug v6: Probe station/device with different params to fix "invalid param type"
  */
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
 
@@ -31,31 +30,31 @@ export async function onRequest(context) {
     const { env } = context;
     const h = { 'Content-Type': 'application/json; charset=utf-8' };
 
-    // ID станції "ІТП 2-а" (Опалення)
-    const HEATING_STATION_ID = 61392922;
-
     try {
         const token = await getToken(env);
+        const results = {};
 
-        // Перевіряємо, які пристрої є в станції і які дані по ним віддає API
-        const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({
-                stationId: HEATING_STATION_ID,
-                page: 1,
-                size: 20
-            }),
-        });
+        // 1. Try just page/size (maybe list all devices?)
+        try {
+            const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ page: 1, size: 50 }),
+            });
+            results.pageSizeOnly = await r.json();
+        } catch (e) { results.pageSizeOnly = e.message; }
 
-        const data = await r.json();
+        // 2. Try with stationId (string vs int)
+        try {
+            const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ stationId: "61392922", page: 1, size: 20 }),
+            });
+            results.stationIdString = await r.json();
+        } catch (e) { results.stationIdString = e.message; }
 
-        return new Response(JSON.stringify({
-            endpoint: 'station/device',
-            stationId: HEATING_STATION_ID,
-            result: data
-        }, null, 2), { headers: h });
-
+        return new Response(JSON.stringify({ results }, null, 2), { headers: h });
     } catch (e) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: h });
     }
