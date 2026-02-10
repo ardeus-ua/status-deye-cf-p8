@@ -1,32 +1,21 @@
 /**
- * Cloudflare Pages Function — DeyeCloud API Proxy
+ * Cloudflare Pages Function — DeyeCloud API Proxy (Device Level)
  * 
- * Отримує дані про рівень заряду батарей з DeyeCloud API.
- * Використовує /v1.0/station/list для отримання batterySOC.
- * Кешує токен (60 днів) та дані (5 хв) через Cloudflare KV.
- * 
- * Environment Variables (Cloudflare Dashboard → Pages → Settings):
- *   DEYE_APP_ID      — AppId з developer.deyecloud.com
- *   DEYE_APP_SECRET  — AppSecret
- *   DEYE_EMAIL       — Email акаунту DeyeCloud
- *   DEYE_PASSWORD    — Пароль (у відкритому вигляді, хешується SHA256 тут)
- * 
- * KV Namespace Binding:
- *   DEYE_CACHE       — для кешування токена і даних
+ * Отримує детальні дані (SOC, Grid Voltage/Freq) через /v1.0/device/latest.
+ * Підтримує агрегацію декількох інверторів для однієї точки (напр. Опалення).
  */
 
-// Маппінг: id → stationId (з DeyeCloud /v1.0/station/list)
-const STATIONS = {
-    1: { stationId: 61392915, name: 'Ліфти 1 парадне' },  // Ліфт п1
-    2: { stationId: 61392916, name: 'Ліфти 2 парадне' },  // Ліфт п2
-    3: { stationId: 61392918, name: 'Ліфти 3 парадне' },  // Ліфт п3
-    4: { stationId: 61392925, name: 'Насосна 2-а' },       // Вода
-    5: { stationId: 61392922, name: 'ІТП 2-а' },           // Опалення
-};
+const CONFIG = [
+    { id: 1, name: 'Ліфт п1', devices: ['2407021154'] },
+    { id: 2, name: 'Ліфт п2', devices: ['2407024008'] },
+    { id: 3, name: 'Ліфт п3', devices: ['2407026195'] },
+    { id: 4, name: 'Вода', devices: ['2407026187'] },
+    { id: 5, name: 'Опалення', devices: ['2407024186', '2510171041'] } // Два інвертори
+];
 
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
-const DATA_CACHE_TTL = 300;      // 5 хвилин (секунди)
-const TOKEN_CACHE_TTL = 5184000; // 60 днів (секунди)
+const DATA_CACHE_TTL = 300;      // 5 хвилин
+const TOKEN_CACHE_TTL = 5184000; // 60 днів
 
 // ─── Утиліти ──────────────────────────────────────────────
 
@@ -42,205 +31,213 @@ function corsHeaders() {
     return {
         'Content-Type': 'application/json; charset=utf-8',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300',
+        'Cache-Control': 'public, max-age=60',
     };
 }
 
 function errorResponse(message, status = 500) {
-    return new Response(
-        JSON.stringify({ error: message }),
-        { status, headers: corsHeaders() }
-    );
+    return new Response(JSON.stringify({ error: message }), { status, headers: corsHeaders() });
 }
 
-// ─── KV кеш ──────────────────────────────────────────────
+// ─── KV Cache ─────────────────────────────────────────────
 
 async function kvGet(kv, key) {
     if (!kv) return null;
     try {
         const value = await kv.get(key);
         return value ? JSON.parse(value) : null;
-    } catch (e) {
-        console.error(`KV get error (${key}):`, e.message);
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
 async function kvPut(kv, key, value, ttl) {
     if (!kv) return;
-    try {
-        await kv.put(key, JSON.stringify(value), { expirationTtl: ttl });
-    } catch (e) {
-        console.error(`KV put error (${key}):`, e.message);
-    }
+    try { await kv.put(key, JSON.stringify(value), { expirationTtl: ttl }); } catch (e) { }
 }
 
-// ─── DeyeCloud Auth ───────────────────────────────────────
+// ─── Auth ─────────────────────────────────────────────────
 
 async function getAccessToken(env) {
     const kv = env.DEYE_CACHE || null;
 
-    // 1. Спроба з KV кешу
+    // Check Cache
     const cached = await kvGet(kv, 'deye_token');
-    if (cached && cached.token) {
-        return cached.token;
+    if (cached && cached.token) return cached.token;
+
+    const { DEYE_APP_ID, DEYE_APP_SECRET, DEYE_EMAIL, DEYE_PASSWORD } = env;
+    if (!DEYE_APP_ID || !DEYE_APP_SECRET || !DEYE_EMAIL || !DEYE_PASSWORD) {
+        throw new Error('Missing credentials env vars');
     }
 
-    // 2. Перевіряємо наявність credentials
-    const { DEYE_APP_ID: appId, DEYE_APP_SECRET: appSecret, DEYE_EMAIL: email, DEYE_PASSWORD: password } = env;
-
-    if (!appId || !appSecret || !email || !password) {
-        throw new Error('Missing credentials. Set DEYE_APP_ID, DEYE_APP_SECRET, DEYE_EMAIL, DEYE_PASSWORD.');
-    }
-
-    // 3. Хешуємо пароль SHA256
-    const passwordHash = await sha256(password);
-
-    // 4. Запит токена
-    const response = await fetch(`${BASE_URL}/v1.0/account/token?appId=${appId}`, {
+    const passwordHash = await sha256(DEYE_PASSWORD);
+    const response = await fetch(`${BASE_URL}/v1.0/account/token?appId=${DEYE_APP_ID}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appSecret, email, password: passwordHash }),
+        body: JSON.stringify({ appSecret: DEYE_APP_SECRET, email: DEYE_EMAIL, password: passwordHash }),
     });
 
     const result = await response.json();
+    const token = result.accessToken || result?.data?.accessToken;
 
-    if (!result.success) {
-        throw new Error(`DeyeCloud auth error: ${result.msg || JSON.stringify(result).substring(0, 200)}`);
-    }
+    if (!token) throw new Error(`Failed to obtain token: ${result.msg || 'Unknown error'}`);
 
-    const token = result.accessToken || result?.data?.accessToken || result?.data?.token;
-    if (!token) {
-        throw new Error(`No token in response: ${JSON.stringify(result).substring(0, 200)}`);
-    }
-
-    // 5. Кешуємо токен
     await kvPut(kv, 'deye_token', { token, createdAt: Date.now() }, TOKEN_CACHE_TTL);
-
     return token;
 }
 
-// ─── Отримання даних станцій ──────────────────────────────
+// ─── Data Fetching ────────────────────────────────────────
 
-async function fetchStationList(token) {
-    const response = await fetch(`${BASE_URL}/v1.0/station/list`, {
+async function fetchDevicesData(token, deviceSns) {
+    // Використовуємо undocumented key { deviceList: [...] }
+    const response = await fetch(`${BASE_URL}/v1.0/device/latest`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ page: 1, size: 50 }),
+        body: JSON.stringify({ deviceList: deviceSns }),
     });
 
     const result = await response.json();
-
-    if (!result.success || !result.stationList) {
-        throw new Error(`Station list error: ${result.msg || JSON.stringify(result).substring(0, 200)}`);
+    // API sometimes returns success=false even with valid data, check deviceDataList
+    if (!result.deviceDataList && !result.success) {
+        throw new Error(`API Error: ${result.msg}`);
     }
-
-    return result.stationList;
+    return result.deviceDataList || [];
 }
 
-// ─── Головний обробник ──────────────────────────────────
+function parseDeviceData(sn, rawItem) {
+    if (!rawItem || !rawItem.dataList) return null;
+
+    const dataList = rawItem.dataList;
+    const getValue = (keys) => {
+        for (const k of keys) {
+            const item = dataList.find(d => d.key === k || d.name === k);
+            if (item && item.value !== undefined && item.value !== null) return item.value;
+        }
+        return null;
+    };
+
+    // SOC Logic: Prioritize BMSSOC over SOC if available and > 0
+    let socVal = parseFloat(getValue(['BMSSOC', 'BMS_SOC'])) || 0;
+    if (socVal === 0) {
+        socVal = parseFloat(getValue(['SOC', 'Battery_SOC'])) || 0;
+    }
+
+    // Grid Status Logic: Check V/Hz
+    const freq = parseFloat(getValue(['GridFrequency', 'Grid_Frequency'])) || 0;
+    const v1 = parseFloat(getValue(['GridVoltageL1', 'GridVoltage', 'Grid_Voltage_L1'])) || 0;
+    const v2 = parseFloat(getValue(['GridVoltageL2', 'Grid_Voltage_L2'])) || 0;
+    const v3 = parseFloat(getValue(['GridVoltageL3', 'Grid_Voltage_L3'])) || 0;
+
+    const maxVoltage = Math.max(v1, v2, v3);
+    const isGridOn = freq > 45 || maxVoltage > 100;
+
+    return {
+        sn,
+        soc: Math.round(socVal),
+        gridRunning: isGridOn,
+        gridFreq: freq > 0 ? freq : (isGridOn ? 50.0 : 0),
+        timestamp: new Date().toISOString() // TODO: parse actual update time if available
+    };
+}
+
+// ─── Main Handler ─────────────────────────────────────────
 
 export async function onRequest(context) {
     const { env, request } = context;
 
-    // CORS preflight
     if (request.method === 'OPTIONS') {
         return new Response(null, {
             headers: {
                 ...corsHeaders(),
                 'Access-Control-Allow-Methods': 'GET, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type',
-            },
+                'Access-Control-Allow-Headers': 'Content-Type'
+            }
         });
     }
 
     try {
         const kv = env.DEYE_CACHE || null;
 
-        // 1. Перевіряємо кеш даних
-        const cachedData = await kvGet(kv, 'battery_data');
-        if (cachedData && cachedData.batteries) {
-            const age = Date.now() - (cachedData.timestamp || 0);
+        // 1. Cache Check (using v2 key to invalidate old structure)
+        const cacheKey = 'battery_data_v3';
+        const cachedData = await kvGet(kv, cacheKey);
+
+        if (cachedData && cachedData.timestamp) {
+            const age = Date.now() - cachedData.timestamp;
             if (age < DATA_CACHE_TTL * 1000) {
-                return new Response(
-                    JSON.stringify({ data: cachedData.batteries, cached: true }),
-                    { headers: corsHeaders() }
-                );
+                return new Response(JSON.stringify({ data: cachedData.batteries, cached: true }), { headers: corsHeaders() });
             }
         }
 
-        // 2. Отримуємо токен
+        // 2. Get Token
         const token = await getAccessToken(env);
 
-        // 3. Отримуємо список станцій (один запит замість N!)
-        const stationList = await fetchStationList(token);
+        // 3. Prepare SN list
+        const allSns = CONFIG.flatMap(c => c.devices);
 
-        // 4. Маппінг stationId → наші батареї
-        const stationMap = {};
-        for (const station of stationList) {
-            stationMap[station.id] = station;
-        }
+        // 4. Fetch Data
+        const rawDataList = await fetchDevicesData(token, allSns);
 
-        const batteries = [];
-        for (const [id, config] of Object.entries(STATIONS)) {
-            const station = stationMap[config.stationId];
-            const now = new Date().toISOString();
+        // 5. Map Data
+        const deviceMap = {};
+        rawDataList.forEach(item => {
+            if (item.deviceSn) {
+                deviceMap[item.deviceSn] = parseDeviceData(item.deviceSn, item);
+            }
+        });
 
-            if (station) {
-                batteries.push({
-                    id: parseInt(id),
-                    name: config.name,
-                    level: station.batterySOC !== null && station.batterySOC !== undefined
-                        ? Math.round(station.batterySOC)
-                        : 0,
-                    grid_freq: station.connectionStatus === 'NORMAL' ? 50.0 : 0.0,
-                    timestamp: station.lastUpdateTime
-                        ? new Date(station.lastUpdateTime * 1000).toISOString()
-                        : now,
-                });
-            } else {
-                batteries.push({
-                    id: parseInt(id),
-                    name: config.name,
+        // 6. Aggregate per config item
+        const resultBatteries = CONFIG.map(item => {
+            const itemDevices = item.devices.map(sn => deviceMap[sn]).filter(Boolean);
+
+            if (itemDevices.length === 0) {
+                // No data found for this item
+                return {
+                    id: item.id,
+                    name: item.name,
                     level: 0,
                     grid_freq: 0,
-                    timestamp: now,
-                });
+                    timestamp: new Date().toISOString()
+                };
             }
-        }
 
-        // 5. Кешуємо
-        await kvPut(kv, 'battery_data', {
-            batteries,
-            timestamp: Date.now(),
-        }, DATA_CACHE_TTL);
+            // Average SOC
+            const totalSoc = itemDevices.reduce((sum, d) => sum + d.soc, 0);
+            const avgSoc = Math.round(totalSoc / itemDevices.length);
 
-        // 6. Відповідь
-        return new Response(
-            JSON.stringify({ data: batteries, cached: false }),
-            { headers: corsHeaders() }
-        );
+            // Grid Status (OR logic: if any inverter has grid, show grid)
+            const isGridOn = itemDevices.some(d => d.gridRunning);
+            const maxFreq = Math.max(...itemDevices.map(d => d.gridFreq));
+
+            return {
+                id: item.id,
+                name: item.name,
+                level: avgSoc,
+                grid_freq: isGridOn ? (maxFreq > 45 ? maxFreq : 50.0) : 0,
+                timestamp: new Date().toISOString()
+            };
+        });
+
+        // 7. Save to Cache
+        await kvPut(kv, cacheKey, { batteries: resultBatteries, timestamp: Date.now() }, DATA_CACHE_TTL);
+
+        return new Response(JSON.stringify({ data: resultBatteries, cached: false }), { headers: corsHeaders() });
 
     } catch (error) {
-        console.error('Battery API error:', error.message);
-
-        // Fallback: stale cache
+        // Fallback to stale cache if error occurs
         const kv = env.DEYE_CACHE || null;
-        const staleData = await kvGet(kv, 'battery_data');
-        if (staleData && staleData.batteries) {
-            return new Response(
-                JSON.stringify({
-                    data: staleData.batteries,
+        try {
+            const stale = await kvGet(kv, 'battery_data_v3');
+            if (stale) {
+                return new Response(JSON.stringify({
+                    data: stale.batteries,
                     cached: true,
                     stale: true,
-                    warning: error.message,
-                }),
-                { headers: corsHeaders() }
-            );
-        }
+                    error: error.message
+                }), { headers: corsHeaders() });
+            }
+        } catch (e) { }
 
         return errorResponse(error.message);
     }
