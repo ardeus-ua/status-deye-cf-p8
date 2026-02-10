@@ -1,5 +1,5 @@
 /**
- * Debug v6: Probe station/device with different params to fix "invalid param type"
+ * Debug v7: Probe station/device with correct stationIds array format
  */
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
 
@@ -34,25 +34,25 @@ export async function onRequest(context) {
         const token = await getToken(env);
         const results = {};
 
-        // 1. Try just page/size (maybe list all devices?)
+        // 1. Try stationIds as number array
         try {
             const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ page: 1, size: 50 }),
+                body: JSON.stringify({ stationIds: [61392922], page: 1, size: 20 }),
             });
-            results.pageSizeOnly = await r.json();
-        } catch (e) { results.pageSizeOnly = e.message; }
+            results.stationIdsArrayNum = await r.json();
+        } catch (e) { results.stationIdsArrayNum = e.message; }
 
-        // 2. Try with stationId (string vs int)
+        // 2. Try stationIds as string array
         try {
             const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ stationId: "61392922", page: 1, size: 20 }),
+                body: JSON.stringify({ stationIds: ["61392922"], page: 1, size: 20 }),
             });
-            results.stationIdString = await r.json();
-        } catch (e) { results.stationIdString = e.message; }
+            results.stationIdsArrayStr = await r.json();
+        } catch (e) { results.stationIdsArrayStr = e.message; }
 
         return new Response(JSON.stringify({ results }, null, 2), { headers: h });
     } catch (e) {
