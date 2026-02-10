@@ -1,7 +1,8 @@
 /**
- * Debug v7: Probe station/device with correct stationIds array format
+ * Debug v8: Get detail data for Heating inverters to find SOC and Grid Voltage
  */
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
+const SNs = ["2407024186", "2510171041"];
 
 async function sha256(text) {
     const enc = new TextEncoder();
@@ -34,25 +35,44 @@ export async function onRequest(context) {
         const token = await getToken(env);
         const results = {};
 
-        // 1. Try stationIds as number array
+        // 1. Try device/latest with array of SNs (undocumented but common)
         try {
-            const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
+            const r = await fetch(`${BASE_URL}/v1.0/device/latest`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ stationIds: [61392922], page: 1, size: 20 }),
+                body: JSON.stringify(SNs), // Just array
             });
-            results.stationIdsArrayNum = await r.json();
-        } catch (e) { results.stationIdsArrayNum = e.message; }
+            results.latestArray = await r.json();
+        } catch (e) { results.latestArray = e.message; }
 
-        // 2. Try stationIds as string array
+        // 2. Try device/latest with deviceList wrapper
         try {
-            const r = await fetch(`${BASE_URL}/v1.0/station/device`, {
+            const r = await fetch(`${BASE_URL}/v1.0/device/latest`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ stationIds: ["61392922"], page: 1, size: 20 }),
+                body: JSON.stringify({ deviceList: SNs }),
             });
-            results.stationIdsArrayStr = await r.json();
-        } catch (e) { results.stationIdsArrayStr = e.message; }
+            results.latestWrapper = await r.json();
+        } catch (e) { results.latestWrapper = e.message; }
+
+        // 3. Try device/latest with deviceSn parameter (one by one)
+        try {
+            const r = await fetch(`${BASE_URL}/v1.0/device/latest`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ deviceSn: SNs[0] }),
+            });
+            results.latestSingle = await r.json();
+        } catch (e) { results.latestSingle = e.message; }
+
+        // 4. Try device/shadow (sometimes used for state)
+        try {
+            const r = await fetch(`${BASE_URL}/v1.0/device/shadow?deviceSn=${SNs[0]}`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            });
+            results.deviceShadow = await r.json();
+        } catch (e) { results.deviceShadow = e.message; }
 
         return new Response(JSON.stringify({ results }, null, 2), { headers: h });
     } catch (e) {
