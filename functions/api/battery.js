@@ -22,7 +22,6 @@ const STATIONS = {
     3: { stationId: 61392918, name: 'Ліфти 3 парадне' },  // Ліфт п3
     4: { stationId: 61392925, name: 'Насосна 2-а' },       // Вода
     5: { stationId: 61392922, name: 'ІТП 2-а' },           // Опалення
-    6: { stationId: 61392922, name: 'ІТП 2-а' },           // Опалення 2 (той самий ІТП, 2 інвертори)
 };
 
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
