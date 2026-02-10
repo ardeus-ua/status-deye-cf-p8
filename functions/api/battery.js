@@ -141,7 +141,7 @@ async function getAccessToken(env) {
         throw new Error(`DeyeCloud error ${result.code}: ${result.msg || 'Unknown error'}`);
     }
 
-    const token = result?.data?.token;
+    const token = result?.accessToken || result?.data?.accessToken || result?.data?.token;
     if (!token) {
         throw new Error(`No token in response: ${JSON.stringify(result).substring(0, 300)}`);
     }
