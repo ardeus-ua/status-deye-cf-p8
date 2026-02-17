@@ -263,6 +263,21 @@ async function handleDebugRequest(env) {
         DEYE_CACHE: env.DEYE_CACHE ? 'CONNECTED' : '❌ MISSING'
     };
 
+    // Підказки для перевірки credentials (без розкриття повних значень)
+    const credentialHints = {};
+    if (env.DEYE_EMAIL) {
+        const e = env.DEYE_EMAIL;
+        credentialHints.email_hint = `${e.substring(0, 3)}...${e.substring(e.length - 3)} (${e.length} chars)`;
+    }
+    if (env.DEYE_PASSWORD) {
+        const p = env.DEYE_PASSWORD;
+        credentialHints.password_length = p.length;
+        credentialHints.password_sha256_prefix = await sha256(p).then(h => h.substring(0, 12) + '...');
+    }
+    if (env.DEYE_APP_ID) {
+        credentialHints.app_id_hint = env.DEYE_APP_ID.substring(0, 6) + '...';
+    }
+
     const kv = env.DEYE_CACHE || null;
 
     // Token status
@@ -316,6 +331,7 @@ async function handleDebugRequest(env) {
         project: 'status-deye-cf-p8',
         timestamp: new Date().toISOString(),
         env_check: envCheck,
+        credential_hints: credentialHints,
         token_status: tokenStatus,
         data_cache_status: dataStatus,
         battery_preview: batteryPreview,
