@@ -6,11 +6,11 @@
  */
 
 const CONFIG = [
-    { id: 1, name: 'Ліфт п1', devices: ['2407021154'] },
-    { id: 2, name: 'Ліфт п2', devices: ['2407024008'] },
-    { id: 3, name: 'Ліфт п3', devices: ['2407026195'] },
-    { id: 4, name: 'Вода', devices: ['2407026187'] },
-    { id: 5, name: 'Опалення', devices: ['2407024186', '2510171041'] } // Два інвертори
+    { id: 1, name: 'Ліфт п1', devices: ['2509174814'] },
+    { id: 2, name: 'Ліфт п2', devices: ['2509174360'] },
+    { id: 3, name: 'Ліфт п3', devices: ['2407102635'] },
+    { id: 4, name: 'Вода', devices: ['2510143840'] },
+    { id: 5, name: 'Опалення', devices: ['2510293833'] }
 ];
 
 const BASE_URL = 'https://eu1-developer.deyecloud.com';
