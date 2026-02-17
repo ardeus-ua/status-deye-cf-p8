@@ -54,6 +54,23 @@ async function kvPut(kv, key, value, ttl) {
     try { await kv.put(key, JSON.stringify(value), { expirationTtl: ttl }); } catch (e) { }
 }
 
+// ─── Error Logging ────────────────────────────────────────
+
+async function logError(kv, context, message) {
+    if (!kv) return;
+    try {
+        const existing = await kvGet(kv, 'error_log') || [];
+        existing.unshift({
+            time: new Date().toISOString(),
+            context,
+            message: String(message).substring(0, 200)
+        });
+        // Зберігаємо тільки останні 10 помилок
+        const trimmed = existing.slice(0, 10);
+        await kv.put('error_log', JSON.stringify(trimmed), { expirationTtl: 86400 * 7 }); // 7 днів
+    } catch (e) { /* ignore logging errors */ }
+}
+
 // ─── Auth ─────────────────────────────────────────────────
 
 async function getAccessToken(env) {
@@ -225,8 +242,11 @@ export async function onRequest(context) {
         return new Response(JSON.stringify({ data: resultBatteries, cached: false }), { headers: corsHeaders() });
 
     } catch (error) {
-        // Fallback to stale cache if error occurs
+        // Log error to KV for debugging via /api/debug
         const kv = env.DEYE_CACHE || null;
+        await logError(kv, 'battery_fetch', error.message);
+
+        // Fallback to stale cache if error occurs
         try {
             const stale = await kvGet(kv, 'battery_data_v3');
             if (stale) {
