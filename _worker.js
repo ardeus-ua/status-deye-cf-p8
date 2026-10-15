@@ -6,23 +6,29 @@
  * сайт віддає їх з KV.
  *
  * Endpoints:
- *   GET  /api/battery         — рівні заряду (edge-кеш 60 с)
+ *   GET  /api/battery         — рівні заряду, мережа й прогноз по кожній системі (edge-кеш 60 с)
  *   POST /api/battery_ingest  — прийом даних від deye-fetch (Authorization: Bearer $INGEST_TOKEN)
  *        { fetchedAt, deviceDataList: [...] }  — сира відповідь Deye /v1.0/device/latest
  *        { fetchedAt, error }                  — Deye не відповів; останні дані лишаються (stale)
  */
 
+// threshold — до якого заряду рахуємо прогноз: ліфт — правило «не користуватись нижче 20%»,
+// вода й опалення — рівень, на якому інвертор вимикає навантаження
 const CONFIG = [
-    { id: 1, name: 'Ліфт п1', devices: ['2509174814'] },
-    { id: 2, name: 'Ліфт п2', devices: ['2509174360'] },
-    { id: 3, name: 'Ліфт п3', devices: ['2407102635'] },
-    { id: 4, name: 'Вода', devices: ['2510143840'] },
-    { id: 5, name: 'Опалення', devices: ['2510293833'] }
+    { id: 1, name: 'Ліфт п1', devices: ['2509174814'], threshold: 20 },
+    { id: 2, name: 'Ліфт п2', devices: ['2509174360'], threshold: 20 },
+    { id: 3, name: 'Ліфт п3', devices: ['2407102635'], threshold: 20 },
+    { id: 4, name: 'Вода', devices: ['2510143840'], threshold: 15 },
+    { id: 5, name: 'Опалення', devices: ['2510293833'], threshold: 15 }
 ];
 
-const STATE_KEY = 'battery_state';         // { batteries, fetchedAt, receivedAt, error }
+// { batteries, fetchedAt, receivedAt, writtenAt, error,
+//   history: { <id>: [[t, level], ...] },   — останні 2 год, для прогнозу
+//   grid: { <id>: { on, since } } }          — коли змінився стан мережі на інверторі
+const STATE_KEY = 'battery_state';
 const EDGE_CACHE_S = 60;
 const STALE_AFTER_MS = 15 * 60 * 1000;     // deye-fetch мовчить 15 хв (3 цикли) — дані застарілі
+const WRITE_EVERY_MS = 10 * 60 * 1000;     // без змін пишемо в KV не частіше — ліміт 1000 записів/добу
 
 // ─── Утиліти ──────────────────────────────────────────────
 
@@ -99,6 +105,68 @@ function aggregate(rawDataList) {
     });
 }
 
+// ─── Прогноз ──────────────────────────────────────────────
+
+const HISTORY_MS = 2 * 60 * 60 * 1000;   // скільки історії тримаємо
+const WINDOW_MS = 60 * 60 * 1000;         // за який проміжок рахуємо швидкість розряду
+const MIN_SPAN_MS = 20 * 60 * 1000;       // менше 20 хв даних — прогноз не показуємо
+const MIN_DROP = 2;                       // заряд у Deye цілими %, без падіння на 2% швидкість — шум
+
+// Лінійна регресія рівня від часу -> %/год (від'ємне — розряд)
+function slopePerHour(points) {
+    const n = points.length;
+    const mt = points.reduce((s, p) => s + p[0], 0) / n;
+    const ml = points.reduce((s, p) => s + p[1], 0) / n;
+    let num = 0, den = 0;
+    for (const [t, l] of points) { num += (t - mt) * (l - ml); den += (t - mt) ** 2; }
+    return den ? (num / den) * 3600 * 1000 : 0;
+}
+
+// Хвилин до порогу при роботі від батареї; null — даних замало або заряд не падає
+function forecastMinutes(points, level, threshold) {
+    if (level <= threshold) return 0;
+    if (points.length < 3) return null;
+    const span = points[points.length - 1][0] - points[0][0];
+    const drop = Math.max(...points.map(p => p[1])) - Math.min(...points.map(p => p[1]));
+    if (span < MIN_SPAN_MS || drop < MIN_DROP) return null;
+    const slope = slopePerHour(points);
+    if (slope >= -0.1) return null;
+    return Math.round((level - threshold) / -slope * 60);
+}
+
+// Оновлює історію, стан мережі й прогноз у state після нових даних. Повертає true, якщо
+// щось суттєве змінилось (рівень або мережа) — тоді запис у KV обов'язковий
+function applyReading(state, batteries, t) {
+    state.history ||= {};
+    state.grid ||= {};
+    const prev = new Map((state.batteries || []).map(b => [b.id, b]));
+    let changed = !state.batteries;
+
+    state.batteries = batteries.map(b => {
+        const cfg = CONFIG.find(c => c.id === b.id);
+        const on = b.grid_freq > 0;
+        const old = prev.get(b.id);
+        if (!old || old.level !== b.level || (old.grid_freq > 0) !== on) changed = true;
+
+        // Мережа: момент зміни (з точністю до 5 хв). Перший запуск — since невідомий
+        const g = state.grid[b.id];
+        if (!g) state.grid[b.id] = { on, since: null };
+        else if (g.on !== on) state.grid[b.id] = { on, since: t };
+
+        const hist = (state.history[b.id] || []).filter(p => t - p[0] <= HISTORY_MS);
+        hist.push([t, b.level]);
+        state.history[b.id] = hist;
+
+        let forecast = null;
+        if (!on) {
+            const from = Math.max(t - WINDOW_MS, state.grid[b.id].since || 0);
+            forecast = forecastMinutes(hist.filter(p => p[0] >= from), b.level, cfg.threshold);
+        }
+        return { ...b, threshold: cfg.threshold, forecast_min: forecast };
+    });
+    return changed;
+}
+
 // ─── GET /api/battery ─────────────────────────────────────
 
 async function batteryResponse(env) {
@@ -108,9 +176,12 @@ async function batteryResponse(env) {
     const state = await readState(kv);
     if (!state?.batteries) return json({ error: state?.error || 'No data yet' }, 503, EDGE_CACHE_S);
 
-    // timestamp — час даних, а не відповіді: «Оновлено» на сторінці показує, наскільки вони свіжі
+    // timestamp — час даних, а не відповіді: «Оновлено» на сторінці показує, наскільки вони свіжі.
+    // grid_since — коли на інверторі з'явилась / зникла мережа (null — ще невідомо).
+    // forecast_min — хвилин до порогу (threshold) при роботі від батареї; null — ще рахуємо.
     const ts = new Date(state.fetchedAt).toISOString();
-    const data = state.batteries.map(b => ({ ...b, timestamp: ts }));
+    const iso = (t) => t ? new Date(t).toISOString() : null;
+    const data = state.batteries.map(b => ({ ...b, timestamp: ts, grid_since: iso(state.grid?.[b.id]?.since) }));
     const silent = Date.now() - (state.receivedAt || state.fetchedAt) > STALE_AFTER_MS;
     const error = state.error || (silent ? 'deye-fetch не надсилає даних' : null);
 
@@ -165,25 +236,33 @@ async function handleIngest(request, env) {
     }
 
     const state = await readState(kv) || {};
-    state.receivedAt = Date.now();
+    const now = Date.now();
+    const prevError = state.error || null;
+    let changed = false;
 
     if (Array.isArray(body.deviceDataList)) {
         const found = body.deviceDataList.filter(d => d && d.deviceSn).length;
         if (!found) {
             state.error = 'Deye: порожній deviceDataList';
         } else {
-            state.batteries = aggregate(body.deviceDataList);
             const t = Date.parse(body.fetchedAt);
-            state.fetchedAt = Number.isFinite(t) ? t : Date.now();
+            state.fetchedAt = Number.isFinite(t) ? t : now;
+            changed = applyReading(state, aggregate(body.deviceDataList), state.fetchedAt);
             state.error = null;
         }
     } else {
         state.error = String(body.error || 'unknown error').slice(0, 300);
     }
 
-    // Один запис KV на виклик (~288/добу при ліміті 1000)
-    await kv.put(STATE_KEY, JSON.stringify(state));
-    return json({ ok: true, error: state.error || null, batteries: state.batteries || null });
+    // KV пишемо тільки при змінах (рівень, мережа, помилка) або раз на 10 хв — вночі й при повному
+    // заряді це в 2-3 рази менше записів, ніж 288/добу
+    const due = changed || state.error !== prevError || !state.writtenAt || now - state.writtenAt >= WRITE_EVERY_MS;
+    if (due) {
+        state.receivedAt = now;
+        state.writtenAt = now;
+        await kv.put(STATE_KEY, JSON.stringify(state));
+    }
+    return json({ ok: true, written: due, error: state.error || null, batteries: state.batteries || null });
 }
 
 // ─── Worker Router ────────────────────────────────────────

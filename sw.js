@@ -1,80 +1,86 @@
 /**
- * Service Worker для PWA та офлайн кешування
- * Мінімізує запити при поганому з'єднанні
+ * Service Worker для PWA та офлайн-режиму
+ *
+ * - Сторінка (навігація): спершу мережа, кеш — тільки без зв'язку. Інакше зі старого кешу могла
+ *   відкритись застаріла сторінка зі старими посиланнями на іконки.
+ * - app.js, manifest.json: так само — мережа, без зв'язку кеш (інакше нова сторінка могла б
+ *   на одне відкриття отримати старий app.js).
+ * - /api/: мережа, без зв'язку — остання відповідь з кешу.
+ * - Іконки та інше не перехоплюємо: браузер і iOS беруть їх напряму.
+ * У кеш кладемо тільки успішні відповіді потрібного типу: Cloudflare Pages на відсутній файл міг
+ * віддати HTML з кодом 200, і такий «файл» більше не потрапить у кеш замість картинки чи скрипта.
  */
 
-const CACHE_NAME = 'battery-status-v2';
-const STATIC_ASSETS = [
-    '/',
-    '/index.html',
-    '/manifest.json',
-    '/icon-192.png',
-    '/icon-512.png'
-];
+const CACHE_NAME = 'battery-status-p8-v3';
+const PAGE = '/';
+const STATIC_ASSETS = ['/app.js', '/manifest.json'];
 
-// Час кешування API відповідей (5 хвилин)
-const API_CACHE_TTL = 5 * 60 * 1000;
+function cacheable(request, response) {
+    if (!response || !response.ok || response.type !== 'basic') return false;
+    const type = response.headers.get('Content-Type') || '';
+    const wantsHtml = request.mode === 'navigate' || new URL(request.url).pathname === PAGE;
+    return wantsHtml ? type.includes('text/html') : !type.includes('text/html');
+}
 
-// Встановлення - кешуємо статичні ресурси
+async function put(request, response) {
+    if (!cacheable(request, response)) return;
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response);
+}
+
+// Встановлення — кешуємо сторінку й статику (тільки валідні відповіді, в обхід HTTP-кешу)
 self.addEventListener('install', event => {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => cache.addAll(STATIC_ASSETS))
-            .then(() => self.skipWaiting())
-    );
+    event.waitUntil((async () => {
+        await Promise.all([PAGE, ...STATIC_ASSETS].map(async path => {
+            const request = new Request(path, { cache: 'reload' });
+            try { await put(request, await fetch(request)); } catch (e) { }
+        }));
+        await self.skipWaiting();
+    })());
 });
 
-// Активація - видаляємо старі кеші
+// Активація — видаляємо старі кеші
 self.addEventListener('activate', event => {
     event.waitUntil(
         caches.keys()
-            .then(keys => Promise.all(
-                keys.filter(key => key !== CACHE_NAME)
-                    .map(key => caches.delete(key))
-            ))
+            .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
             .then(() => self.clients.claim())
     );
 });
 
-// Стратегія fetch: Network First для API, Cache First для статики
 self.addEventListener('fetch', event => {
     const { request } = event;
+    if (request.method !== 'GET') return;
     const url = new URL(request.url);
+    if (url.origin !== location.origin) return;
 
-    // API запити - Network First з fallback на кеш
-    if (url.pathname.startsWith('/api/')) {
+    // Сторінка: мережа, без зв'язку — кеш
+    if (request.mode === 'navigate') {
         event.respondWith(
             fetch(request)
-                .then(response => {
-                    // Клонуємо відповідь для кешування
-                    const responseClone = response.clone();
-                    caches.open(CACHE_NAME)
-                        .then(cache => {
-                            cache.put(request, responseClone);
-                        });
-                    return response;
-                })
-                .catch(() => {
-                    // Офлайн - повертаємо з кешу
-                    return caches.match(request);
-                })
+                .then(response => { put(new Request(PAGE), response.clone()); return response; })
+                .catch(() => caches.match(PAGE))
         );
         return;
     }
 
-    // Статичні ресурси - Cache First
-    event.respondWith(
-        caches.match(request)
-            .then(cached => {
-                if (cached) {
-                    // Оновлюємо кеш у фоні
-                    fetch(request).then(response => {
-                        caches.open(CACHE_NAME)
-                            .then(cache => cache.put(request, response));
-                    }).catch(() => { });
-                    return cached;
-                }
-                return fetch(request);
-            })
-    );
+    // API: мережа, без зв'язку — остання відповідь
+    if (url.pathname.startsWith('/api/')) {
+        event.respondWith(
+            fetch(request)
+                .then(response => { put(request, response.clone()); return response; })
+                .catch(() => caches.match(request))
+        );
+        return;
+    }
+
+    // app.js, manifest.json: мережа, без зв'язку — кеш
+    if (STATIC_ASSETS.includes(url.pathname)) {
+        event.respondWith(
+            fetch(request)
+                .then(response => { put(request, response.clone()); return response; })
+                .catch(() => caches.match(request))
+        );
+    }
+    // Іконки й решту не перехоплюємо
 });

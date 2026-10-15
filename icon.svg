@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#34c759"/>
+  <rect x="140" y="118" width="214" height="118" rx="30" fill="none" stroke="#ffffff" stroke-width="18"/>
+  <rect x="357" y="152" width="20" height="50" rx="8" fill="#ffffff"/>
+  <path d="M262 132 L210 190 H246 L232 224 L286 166 H250 Z" fill="#ffffff"/>
+  <text x="256" y="398" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="800" font-size="150" letter-spacing="-4" fill="#ffffff">П8</text>
+</svg>
