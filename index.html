@@ -577,8 +577,8 @@
 
                 const result = await response.json();
 
-                // Перевірка на помилки у відповіді
-                if (result.error) {
+                // stale: deye-fetch не приносить свіжих даних, сервер віддав останні збережені — показуємо їх
+                if (result.error && !Array.isArray(result.data)) {
                     throw new Error(result.error);
                 }
 
@@ -589,7 +589,7 @@
 
                 // Відображаємо
                 displayBatteryData(batteries);
-                updateStatus('online', 'Онлайн');
+                updateStatus(result.stale ? 'cached' : 'online', result.stale ? 'Дані застарілі' : 'Онлайн');
 
             } catch (error) {
                 console.error('Помилка при отриманні даних:', error);
@@ -628,8 +628,13 @@
         // Перший запуск
         updateBatteryStatus();
 
-        // Оновлення кожні 5 хвилин замість 10 секунд - економія запитів!
-        setInterval(updateBatteryStatus, UPDATE_INTERVAL);
+        // Оновлення кожні 5 хвилин — тільки у видимій вкладці; при поверненні на вкладку — одразу
+        setInterval(() => {
+            if (document.visibilityState === 'visible') updateBatteryStatus();
+        }, UPDATE_INTERVAL);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') updateBatteryStatus();
+        });
 
         // Реєстрація Service Worker для PWA
         if ('serviceWorker' in navigator) {

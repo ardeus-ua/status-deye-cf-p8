@@ -3,7 +3,7 @@
  * Мінімізує запити при поганому з'єднанні
  */
 
-const CACHE_NAME = 'battery-status-v1';
+const CACHE_NAME = 'battery-status-v2';
 const STATIC_ASSETS = [
     '/',
     '/index.html',
